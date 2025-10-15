@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+	"crates/rast", 
+	"crates/rast-web", 
+	"crates/rast-bench", 
+	"crates/tint", 
+	"crates/frend", 
+	"crates/glazer", 
+	"crates/packit", 
+	"crates/lidsp",
+	"crates/packit-macro",
+]

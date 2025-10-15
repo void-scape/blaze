@@ -1,0 +1,5 @@
+[files]
+extend-exclude = ["*.bin"]
+
+[default.extend-words]
+loca = "loca"

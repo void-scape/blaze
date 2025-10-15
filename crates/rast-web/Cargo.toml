@@ -1,0 +1,10 @@
+[package]
+name = "rast-web"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rast = { path = "../rast" }
+glam = "0.30.8"
+tiny_http = "0.12"
+tobj = "4.0.3"

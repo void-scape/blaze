@@ -1,0 +1,8 @@
+[package]
+name = "frend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+glazer = { path = "../glazer" }
+rast = { path = "../rast" }
