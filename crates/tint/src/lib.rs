@@ -76,7 +76,7 @@ impl LinearRgb {
     }
 
     #[inline]
-    pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
+    pub const fn from_rgb(r: f32, g: f32, b: f32) -> Self {
         Self::new(r, g, b, 1.0)
     }
 
@@ -157,9 +157,9 @@ impl Color for LinearRgb {
             h += 1.0;
         }
 
-        debug_assert!(0.0 <= h && h <= 1.0);
-        debug_assert!(0.0 <= s && s <= 1.0);
-        debug_assert!(0.0 <= v && v <= 1.0);
+        debug_assert!((0.0..=1.0).contains(&h));
+        debug_assert!((0.0..=1.0).contains(&s));
+        debug_assert!((0.0..=1.0).contains(&v));
 
         Hsv { h, s, v, a: self.a }
     }
@@ -261,7 +261,7 @@ impl Srgb {
     }
 
     #[inline]
-    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
+    pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
         Self::new(r, g, b, 255)
     }
 
@@ -353,7 +353,7 @@ impl Hsv {
     }
 
     #[inline]
-    pub const fn hsv(h: f32, s: f32, v: f32) -> Self {
+    pub const fn from_hsv(h: f32, s: f32, v: f32) -> Self {
         Self::new(h, s, v, 1.0)
     }
 
@@ -908,7 +908,7 @@ mod test {
     #[test]
     fn linear_roundtrip() {
         srgb_cube(|r, g, b| {
-            let srgb = Srgb::rgb(r, g, b);
+            let srgb = Srgb::from_rgb(r, g, b);
             let linear = srgb.to_linear();
             linear.to_srgb()
         });
@@ -917,7 +917,7 @@ mod test {
     #[test]
     fn hsv_roundtrip() {
         srgb_cube(|r, g, b| {
-            let srgb = Srgb::rgb(r, g, b);
+            let srgb = Srgb::from_rgb(r, g, b);
             let hsv = srgb.to_hsv();
             hsv.to_srgb()
         });

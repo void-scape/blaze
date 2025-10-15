@@ -31,6 +31,7 @@
 //! - [`rast_triangle_wireframe`]
 //! - [`rast_triangle_wireframe_checked`]
 
+#![allow(clippy::too_many_arguments)]
 #![no_std]
 extern crate alloc;
 
@@ -610,7 +611,7 @@ fn rast_line_inner<Pixel: Copy>(
     for i in 0..=steps {
         let x = v1x as f32 + i as f32 * step_x;
         let y = v1y as f32 + i as f32 * step_y;
-        let z = v1z as f32 + i as f32 * step_z;
+        let z = v1z + i as f32 * step_z;
 
         let pixel_x = libm::floorf(x) as i32;
         let pixel_y = libm::floorf(y) as i32;
@@ -742,7 +743,7 @@ pub trait Shader {
     #[inline]
     fn fragment(&mut self, data: Self::VertexData) -> LinearRgb {
         let _ = data;
-        LinearRgb::rgb(1.0, 1.0, 1.0)
+        LinearRgb::from_rgb(1.0, 1.0, 1.0)
     }
 }
 

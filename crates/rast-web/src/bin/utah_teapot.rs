@@ -53,9 +53,9 @@ fn main() {
                 v3.x as i32,
                 v3.y as i32,
                 v3.z,
-                LinearRgb::rgb(1.0, 0.0, 0.0),
-                LinearRgb::rgb(0.0, 1.0, 0.0),
-                LinearRgb::rgb(0.0, 0.0, 1.0),
+                LinearRgb::from_rgb(1.0, 0.0, 0.0),
+                LinearRgb::from_rgb(0.0, 1.0, 0.0),
+                LinearRgb::from_rgb(0.0, 0.0, 1.0),
                 ColorShader,
             );
         }

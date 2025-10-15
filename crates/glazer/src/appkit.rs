@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 extern crate std;
 
 use std::boxed::Box;
@@ -208,12 +210,12 @@ fn load_game_dylib<Memory, Pixels>(path: &str) -> Option<LoadedGameFunctions<Mem
     let filename = CString::new(copy.to_str().unwrap()).expect("invalid dylib string");
     let dylib = unsafe { libc::dlopen(filename.as_ptr(), libc::RTLD_LOCAL | libc::RTLD_LAZY) };
     if !dylib.is_null() {
-        let symbol = unsafe { libc::dlsym(dylib, "update_and_render\0".as_ptr().cast()) };
+        let symbol = unsafe { libc::dlsym(dylib, c"update_and_render".as_ptr().cast()) };
         if !symbol.is_null() {
             let update_and_render: fn(PlatformUpdate<Memory, Pixels>) =
                 unsafe { std::mem::transmute(symbol as *const ()) };
 
-            let symbol = unsafe { libc::dlsym(dylib, "handle_input\0".as_ptr().cast()) };
+            let symbol = unsafe { libc::dlsym(dylib, c"handle_input".as_ptr().cast()) };
             if !symbol.is_null() {
                 let handle_input: fn(PlatformInput<Memory>) =
                     unsafe { std::mem::transmute(symbol as *const ()) };
@@ -362,7 +364,7 @@ define_class!(
                     4,
                     true,
                     false,
-                    &*NSColorSpaceName::from_str("NSCalibratedRGBColorSpace"),
+                    &NSColorSpaceName::from_str("NSCalibratedRGBColorSpace"),
                     WIDTH as isize * 4,
                     32,
                 )
@@ -623,7 +625,7 @@ fn update(view: &GameView, ivars: &GameViewIvars) {
 
     let fps = if delta > 0.0 { 1.0 / delta } else { 0.0 };
     let title = format!("glazer app - {:.2}", fps);
-    ivars.window.setTitle(&*NSString::from_str(&title));
+    ivars.window.setTitle(&NSString::from_str(&title));
 
     let fb = ivars.fb;
     let indices = AUDIO_SAMPLES_INDICES.load(Ordering::Acquire);
@@ -674,7 +676,7 @@ static mut AUDIO_SAMPLES: [f32; AUDIO_SAMPLES_LEN] = [0.0; AUDIO_SAMPLES_LEN];
 // secondary buffer for the game to write to
 static mut GAME_SAMPLES: [f32; AUDIO_SAMPLES_LEN] = [0.0; AUDIO_SAMPLES_LEN];
 // write index is packed into top 32 bits, read index in bottom 32 bits
-static AUDIO_SAMPLES_INDICES: AtomicU64 = AtomicU64::new((2 << 32) | 0);
+static AUDIO_SAMPLES_INDICES: AtomicU64 = AtomicU64::new(2 << 32);
 
 unsafe extern "C-unwind" fn audio_callback(
     _ref_con: NonNull<c_void>,

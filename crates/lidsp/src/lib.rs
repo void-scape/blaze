@@ -24,7 +24,7 @@ pub fn linear_volume(samples: &mut [f32], factor: f32) {
 /// Linearly scale `samples` by `factor` without clamping samples.
 pub fn linear_volume_unclamped(samples: &mut [f32], factor: f32) {
     for sample in samples.iter_mut() {
-        *sample = *sample * factor;
+        *sample *= factor;
     }
 }
 

@@ -49,6 +49,7 @@ pub enum FontSampling {
     AntiAliased,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn rasterize_codepoint<Pixel: From<u8>>(
     data: &TtfData,
     pixels: &mut [Pixel],
@@ -73,10 +74,8 @@ pub fn rasterize_codepoint<Pixel: From<u8>>(
     let (xmax, ymax) = glyph.max;
     let xmin = ((xmin as f32 * font_size).floor() as i32 + x as i32).max(0);
     let ymin = ((ymin as f32 * font_size).floor() as i32 + y as i32).max(0);
-    let xmax =
-        ((xmax as f32 * font_size).floor() as i32 + x as i32).min((width as usize - 1) as i32);
-    let ymax =
-        ((ymax as f32 * font_size).floor() as i32 + y as i32).min((height as usize - 1) as i32);
+    let xmax = ((xmax as f32 * font_size).floor() as i32 + x as i32).min((width - 1) as i32);
+    let ymax = ((ymax as f32 * font_size).floor() as i32 + y as i32).min((height - 1) as i32);
 
     assert!(xmin <= xmax);
     assert!(ymin <= ymax);
@@ -121,7 +120,7 @@ fn new_ttf_data<'a>(ttf_bytes: &'a [u8]) -> TtfData<'a> {
     assert!(offset_subtable.num_tables as usize <= MAX_TABLES);
 
     let input = &mut &ttf_bytes[core::mem::size_of::<OffsetSubtable>()..];
-    for i in 0..offset_subtable.num_tables as usize {
+    for table in tables.iter_mut().take(offset_subtable.num_tables as usize) {
         let entry = cast_be_slice::<TableEntry, { core::mem::size_of::<TableEntry>() }>(input);
 
         // TODO: check sum weirdness in head table
@@ -130,7 +129,7 @@ fn new_ttf_data<'a>(ttf_bytes: &'a [u8]) -> TtfData<'a> {
         // assert_eq!(check_sum, table_checksum(&input, length));
 
         *input = &input[core::mem::size_of::<TableEntry>()..];
-        tables[i] = entry;
+        *table = entry;
 
         // fn table_checksum(table: &[u8], ttf_bytes_in_table: u32) -> u32 {
         //     let longs = (ttf_bytes_in_table + 3) / 4;
@@ -186,14 +185,14 @@ fn point_in_glyph(glyph: &Glyph, px: f32, py: f32) -> bool {
         assert!(points[0].2);
 
         let mut normalized_points: Vec<(f32, f32, bool)> = Vec::new();
-        for i in 0..points.len() {
-            let p2 = points[i];
-            if let Some(p1) = normalized_points.last() {
-                if !p1.2 && !p2.2 {
-                    let mx = (p1.0 + p2.0 as f32) / 2.0;
-                    let my = (p1.1 + p2.1 as f32) / 2.0;
-                    normalized_points.push((mx, my, true));
-                }
+        for p2 in points.iter() {
+            if let Some(p1) = normalized_points.last()
+                && !p1.2
+                && !p2.2
+            {
+                let mx = (p1.0 + p2.0 as f32) / 2.0;
+                let my = (p1.1 + p2.1 as f32) / 2.0;
+                normalized_points.push((mx, my, true));
             }
             normalized_points.push((p2.0 as f32, p2.1 as f32, p2.2));
         }
@@ -231,12 +230,12 @@ fn point_in_glyph(glyph: &Glyph, px: f32, py: f32) -> bool {
         let (p1, p2) = match edge {
             Edge::Line { p1, p2 } => (p1, p2),
             Edge::Curve { p1, c, p2 } => {
-                let p1x = p1.0 as f32;
-                let p1y = p1.1 as f32;
-                let cx = c.0 as f32;
-                let cy = c.1 as f32;
-                let p2x = p2.0 as f32;
-                let p2y = p2.1 as f32;
+                let p1x = p1.0;
+                let p1y = p1.1;
+                let cx = c.0;
+                let cy = c.1;
+                let p2x = p2.0;
+                let p2y = p2.1;
 
                 if let Some((u1, u2, d)) =
                     barycentric_coordinates(px, py, p1x, p1y, cx, cy, p2x, p2y)
@@ -262,10 +261,10 @@ fn point_in_glyph(glyph: &Glyph, px: f32, py: f32) -> bool {
             }
         };
 
-        let p1x = p1.0 as f32;
-        let p1y = p1.1 as f32;
-        let p2x = p2.0 as f32;
-        let p2y = p2.1 as f32;
+        let p1x = p1.0;
+        let p1y = p1.1;
+        let p2x = p2.0;
+        let p2y = p2.1;
 
         if p1y <= py && p2y > py {
             // Crossing from top to bottom
@@ -285,6 +284,7 @@ fn point_in_glyph(glyph: &Glyph, px: f32, py: f32) -> bool {
     winding > 0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn barycentric_coordinates(
     px: f32,
     py: f32,
@@ -378,7 +378,7 @@ impl Head {
     const HEAD: u32 = tag!(b'h', b'e', b'a', b'd');
 
     fn new(ttf_bytes: &[u8], tables: &[TableEntry]) -> Self {
-        let head = read_table::<Head>(ttf_bytes, &tables, Self::HEAD);
+        let head = read_table::<Head>(ttf_bytes, tables, Self::HEAD);
         let magic_number = head.magic_number;
         let loc_format = head.index_to_loc_format;
         assert_eq!(magic_number, 0x5F0F3CF5);
@@ -449,7 +449,7 @@ impl<'a> CMap<'a> {
         assert_eq!(version, 0);
         println!("{cmap_index:#?}");
 
-        let cmap_table_base = table_entry(&tables, Self::CMAP).offset as usize;
+        let cmap_table_base = table_entry(tables, Self::CMAP).offset as usize;
         let subtables_offset = cmap_table_base + core::mem::size_of::<CMapIndex>();
         let input = &mut &ttf_bytes[subtables_offset..];
         let mut cmap_format_offset = 0;
@@ -483,7 +483,7 @@ impl<'a> CMap<'a> {
 
         let seg_count = cmap.seg_count_x2 as usize;
         assert!(seg_count.is_multiple_of(2));
-        let start = cmap_format_offset as usize + core::mem::size_of::<CMapFormat4>();
+        let start = cmap_format_offset + core::mem::size_of::<CMapFormat4>();
         let end = start + cmap.length as usize;
         let cmap_bytes = &mut &ttf_bytes[start..end];
 
@@ -537,23 +537,23 @@ impl<'a> CMap<'a> {
     }
 
     fn end_code(&self, index: usize) -> u16 {
-        self.u16_at_index(&self.end_code, index)
+        self.u16_at_index(self.end_code, index)
     }
 
     fn start_code(&self, index: usize) -> u16 {
-        self.u16_at_index(&self.start_code, index)
+        self.u16_at_index(self.start_code, index)
     }
 
     fn id_delta(&self, index: usize) -> u16 {
-        self.u16_at_index(&self.id_delta, index)
+        self.u16_at_index(self.id_delta, index)
     }
 
     fn id_range_offset(&self, index: usize) -> u16 {
-        self.u16_at_index(&self.id_range_offset, index)
+        self.u16_at_index(self.id_range_offset, index)
     }
 
     fn glyph_index_array(&self, index: usize) -> u16 {
-        self.u16_at_index(&self.glyph_index_array, index)
+        self.u16_at_index(self.glyph_index_array, index)
     }
 
     fn u16_at_index(&self, be_bytes: &[u8], index: usize) -> u16 {
@@ -570,7 +570,7 @@ impl<'a> Loca<'a> {
     const LOCA: u32 = tag!(b'l', b'o', b'c', b'a');
 
     fn new(ttf_bytes: &'a [u8], tables: &[TableEntry]) -> Self {
-        let table = table_entry(&tables, Self::LOCA);
+        let table = table_entry(tables, Self::LOCA);
         let offset = table.offset as usize;
         let length = table.length as usize;
 
@@ -596,7 +596,7 @@ impl<'a> Glyf<'a> {
     const GLYF: u32 = tag!(b'g', b'l', b'y', b'f');
 
     fn new(ttf_bytes: &'a [u8], tables: &[TableEntry]) -> Self {
-        let table = table_entry(&tables, Self::GLYF);
+        let table = table_entry(tables, Self::GLYF);
         let offset = table.offset as usize;
         let length = table.length as usize;
 

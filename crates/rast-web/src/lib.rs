@@ -19,8 +19,8 @@ pub fn serve(mut f: impl FnMut(&mut [Srgb], &mut [f32], f32) + Send + Sync + 'st
                         pixels,
                         depth_buffer,
                     } = &mut *double_buffer.write().unwrap();
-                    pixels.fill(Srgb::rgb(42, 42, 42));
-                    depth_buffer.fill(std::f32::MAX);
+                    pixels.fill(Srgb::from_rgb(42, 42, 42));
+                    depth_buffer.fill(f32::MAX);
                     f(pixels.as_mut_slice(), depth_buffer.as_mut_slice(), dt);
                 }
                 let end = std::time::Instant::now()

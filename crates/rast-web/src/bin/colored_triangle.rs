@@ -17,9 +17,9 @@ fn colored_triangle(pixels: &mut [Srgb], _: &mut [f32], _: f32) {
         HEIGHT as i32 / 3,
         WIDTH as i32 / 3 * 2,
         HEIGHT as i32 / 3 * 2,
-        LinearRgb::rgb(1.0, 0.0, 0.0),
-        LinearRgb::rgb(0.0, 1.0, 0.0),
-        LinearRgb::rgb(0.0, 0.0, 1.0),
+        LinearRgb::from_rgb(1.0, 0.0, 0.0),
+        LinearRgb::from_rgb(0.0, 1.0, 0.0),
+        LinearRgb::from_rgb(0.0, 0.0, 1.0),
         ColorShader,
     );
 }
