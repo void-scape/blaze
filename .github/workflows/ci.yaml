@@ -23,7 +23,7 @@ jobs:
         with:
           components: clippy
       - name: Install Dependencies
-        run: sudo apt-get update; sudo apt-get install --no-install-recommends alsa
+        run: sudo apt-get update; sudo apt-get install --no-install-recommends libasound2-dev
       - run: cargo clippy --all-features --workspace -- -D warnings
   fmt:
     name: cargo fmt
@@ -48,7 +48,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Dependencies
-        run: sudo apt-get update; sudo apt-get install --no-install-recommends alsa
+        run: sudo apt-get update; sudo apt-get install --no-install-recommends libasound2-dev
       - run: cargo test --all-features --workspace
   typos:
     name: typos
