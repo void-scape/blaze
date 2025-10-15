@@ -1,13 +1,11 @@
-use crate::{PlatformInput, PlatformUpdate};
-
 pub fn run<Memory, Pixels>(
-    _memory: Memory,
-    _frame_buffer: &mut [Pixels],
-    _width: usize,
-    _height: usize,
-    _handle_input: fn(PlatformInput<Memory>),
-    _update_and_render: fn(PlatformUpdate<Memory, Pixels>),
-    _shared_lib_path: Option<&str>,
+    _: Memory,
+    _: &mut [Pixels],
+    _: usize,
+    _: usize,
+    _: fn(crate::PlatformInput<Memory>),
+    _: fn(crate::PlatformUpdate<Memory, Pixels>),
+    _: Option<&str>,
 ) where
     Pixels: 'static,
     Memory: 'static,
@@ -15,22 +13,22 @@ pub fn run<Memory, Pixels>(
     panic!("platform not supported");
 }
 
-pub fn log(str: &str) {
+pub fn log(_: &str) {
     panic!("platform not supported");
 }
 
-pub fn debug_time_secs<R>(f: impl FnMut() -> R) -> (f32, R) {
+pub fn debug_time_secs<R>(_: impl FnMut() -> R) -> (f32, R) {
     panic!("platform not supported");
 }
 
-pub fn debug_time_millis<R>(f: impl FnMut() -> R) -> (u128, R) {
+pub fn debug_time_millis<R>(_: impl FnMut() -> R) -> (u128, R) {
     panic!("platform not supported");
 }
 
-pub fn debug_time_micros<R>(f: impl FnMut() -> R) -> (u128, R) {
+pub fn debug_time_micros<R>(_: impl FnMut() -> R) -> (u128, R) {
     panic!("platform not supported");
 }
 
-pub fn debug_time_nanos<R>(f: impl FnMut() -> R) -> (u128, R) {
+pub fn debug_time_nanos<R>(_: impl FnMut() -> R) -> (u128, R) {
     panic!("platform not supported");
 }

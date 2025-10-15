@@ -126,7 +126,7 @@ pub trait Pack<'a> {
 
 impl Pack<'_> for bool {
     fn pack(&self, bytes: &mut [u8], align: NonZero<usize>) {
-        assert!(bytes.is_empty());
+        assert!(!bytes.is_empty());
         u8::pack(&(*self as u8), bytes, align);
     }
 
