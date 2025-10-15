@@ -5,7 +5,7 @@
 ## Example
 
 ```rust
-let srgb = Srgb::rgb(r, g, b);
+let srgb = Srgb::from_rgb(r, g, b);
 let mut linear = srgb.to_linear();
 linear *= 0.5;
 let srgb = linear.to_srgb();
