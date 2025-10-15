@@ -22,7 +22,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      # no dependencies
+      - name: Install Dependencies
+        run: sudo apt-get update; sudo apt-get install --no-install-recommends alsa
       - run: cargo clippy --all-features --workspace -- -D warnings
   fmt:
     name: cargo fmt
@@ -46,7 +47,8 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - uses: dtolnay/rust-toolchain@stable
-      # no dependencies
+      - name: Install Dependencies
+        run: sudo apt-get update; sudo apt-get install --no-install-recommends alsa
       - run: cargo test --all-features --workspace
   typos:
     name: typos

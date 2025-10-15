@@ -6,6 +6,11 @@ mod appkit;
 #[cfg(target_os = "macos")]
 use appkit as platform;
 
+#[cfg(not(any(target_os = "macos")))]
+mod unsupported;
+#[cfg(not(any(target_os = "macos")))]
+use unsupported as platform;
+
 pub fn run<Memory, Pixels>(
     memory: Memory,
     frame_buffer: &mut [Pixels],

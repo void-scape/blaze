@@ -1,6 +1,6 @@
 # Blaze
 
-Simple low-level libraries for game development in Rust.
+Simple *no_std* libraries for game development in Rust.
 
 Library | Category | Description
 ------- | -------- | -----------
