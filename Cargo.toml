@@ -11,3 +11,6 @@ members = [
 	"crates/lidsp",
 	"crates/packit-macro",
 ]
+
+[workspace.dependencies]
+libm = "0.2"

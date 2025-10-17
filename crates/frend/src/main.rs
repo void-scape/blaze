@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 fn main() {
     let bytes = include_bytes!("../Hack-Regular.ttf");
     let ttf = TtfData::new(bytes.as_slice());
@@ -6,21 +8,20 @@ fn main() {
     const HEIGHT: usize = 800;
     let pixels = &mut [0u8; WIDTH * HEIGHT];
 
-    let font_size = 0.1;
-    let xrange = (ttf.head.xmax - ttf.head.xmin) / 2;
-    for (i, codepoint) in ['a', 'b', 'c'].into_iter().enumerate() {
-        rasterize_codepoint(
-            &ttf,
-            pixels,
-            WIDTH,
-            HEIGHT,
-            ((i * xrange as usize) as f32 * font_size).ceil() as usize,
-            0,
-            font_size,
-            codepoint as u16,
-            FontSampling::AntiAliased,
-        );
-    }
+    let font_size = 0.02;
+    let codepoints = "Traditionally, text is composed";
+
+    rasterize_codepoints(
+        &ttf,
+        pixels,
+        WIDTH,
+        HEIGHT,
+        0,
+        100,
+        font_size,
+        FontSampling::AntiAliased,
+        codepoints,
+    );
 
     let mut pixels = pixels
         .chunks(WIDTH)
@@ -36,20 +37,64 @@ pub struct TtfData<'a> {
     pub cmap: CMap<'a>,
     pub loca: Loca<'a>,
     pub glyf: Glyf<'a>,
+    pub hhea: Hhea,
+    pub hmtx: Hmtx<'a>,
 }
 
 impl<'a> TtfData<'a> {
     pub fn new(ttf_bytes: &'a [u8]) -> Self {
         new_ttf_data(ttf_bytes)
     }
+
+    pub fn codepoint_glyph(&self, codepoint: u16) -> Glyph {
+        let glyph_index = self.cmap.codepoint_to_glyph_index(codepoint);
+        let glyph_offset = self.loca.glyph_index_to_glyph_offset(glyph_index);
+        let glyph_offset_end = self.loca.glyph_index_to_glyph_offset(glyph_index + 1);
+        self.glyf
+            .glyph_offset_to_glyph(glyph_offset, glyph_offset_end)
+    }
 }
 
+#[derive(Clone, Copy)]
 pub enum FontSampling {
     BiLevel,
     AntiAliased,
 }
 
-#[allow(clippy::too_many_arguments)]
+pub fn rasterize_codepoints<Pixel: From<u8>>(
+    data: &TtfData,
+    pixels: &mut [Pixel],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    font_size: f32,
+    sampling: FontSampling,
+    text: &str,
+) {
+    assert!(pixels.len() >= width * height);
+    if x >= width || y >= height {
+        return;
+    }
+
+    let mut x = x as f32;
+    for codepoint in text.chars() {
+        assert_eq!(Some(codepoint), char::from_u32(codepoint as u16 as u32));
+        let glyph_index = data.cmap.codepoint_to_glyph_index(codepoint as u16);
+        let glyph_offset = data.loca.glyph_index_to_glyph_offset(glyph_index);
+        let glyph_offset_end = data.loca.glyph_index_to_glyph_offset(glyph_index + 1);
+        let glyph = data
+            .glyf
+            .glyph_offset_to_glyph(glyph_offset, glyph_offset_end);
+
+        rasterize_glyph(
+            pixels, width, height, x as usize, y, font_size, sampling, &glyph,
+        );
+        let horizontal_metric = data.hmtx.horizontal_metric(glyph_index);
+        x += horizontal_metric.advance_width as f32 * font_size;
+    }
+}
+
 pub fn rasterize_codepoint<Pixel: From<u8>>(
     data: &TtfData,
     pixels: &mut [Pixel],
@@ -58,17 +103,32 @@ pub fn rasterize_codepoint<Pixel: From<u8>>(
     x: usize,
     y: usize,
     font_size: f32,
-    codepoint: u16,
     sampling: FontSampling,
+    codepoint: u16,
 ) {
     assert!(pixels.len() >= width * height);
     if x >= width || y >= height {
         return;
     }
 
-    let glyph_index = data.cmap.codepoint_to_glyph_index(codepoint);
-    let glyph_offset = data.loca.glyph_index_to_glyph_offset(glyph_index);
-    let glyph = data.glyf.glyph_offset_to_glyph(glyph_offset);
+    let glyph = data.codepoint_glyph(codepoint);
+    rasterize_glyph(pixels, width, height, x, y, font_size, sampling, &glyph);
+}
+
+pub fn rasterize_glyph<Pixel: From<u8>>(
+    pixels: &mut [Pixel],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    font_size: f32,
+    sampling: FontSampling,
+    glyph: &Glyph,
+) {
+    assert!(pixels.len() >= width * height);
+    if x >= width || y >= height {
+        return;
+    }
 
     let (xmin, ymin) = glyph.min;
     let (xmax, ymax) = glyph.max;
@@ -89,7 +149,7 @@ pub fn rasterize_codepoint<Pixel: From<u8>>(
                 let sx = (px - x as i32) as f32 * font_size_inv;
                 match sampling {
                     FontSampling::BiLevel => {
-                        let s = point_in_glyph(&glyph, sx, sy) as u8 * 255;
+                        let s = point_in_glyph(glyph, sx, sy) as u8 * 255;
                         pixels[index] = Pixel::from(s);
                     }
                     FontSampling::AntiAliased => {
@@ -99,7 +159,7 @@ pub fn rasterize_codepoint<Pixel: From<u8>>(
                             for subx in 0..4 {
                                 let sample_x = sx + (subx as f32 + 0.5) * offset;
                                 let sample_y = sy + (suby as f32 + 0.5) * offset;
-                                accum += point_in_glyph(&glyph, sample_x, sample_y) as usize;
+                                accum += point_in_glyph(glyph, sample_x, sample_y) as usize;
                             }
                         }
                         pixels[index] = Pixel::from(((accum * 255) / 16) as u8);
@@ -123,38 +183,29 @@ fn new_ttf_data<'a>(ttf_bytes: &'a [u8]) -> TtfData<'a> {
     for table in tables.iter_mut().take(offset_subtable.num_tables as usize) {
         let entry = cast_be_slice::<TableEntry, { core::mem::size_of::<TableEntry>() }>(input);
 
-        // TODO: check sum weirdness in head table
-        // let check_sum = entry.check_sum;
-        // let length = entry.length;
-        // assert_eq!(check_sum, table_checksum(&input, length));
-
         *input = &input[core::mem::size_of::<TableEntry>()..];
         *table = entry;
-
-        // fn table_checksum(table: &[u8], ttf_bytes_in_table: u32) -> u32 {
-        //     let longs = (ttf_bytes_in_table + 3) / 4;
-        //     assert!(table.len() >= ttf_bytes_in_table as usize);
-        //     let table_longs = unsafe {
-        //         core::slice::from_raw_parts(table.as_ptr() as *const u32, longs as usize)
-        //     };
-        //     table_longs.iter().sum()
-        // }
     }
 
     let head = Head::new(ttf_bytes, &tables);
     let cmap = CMap::new(ttf_bytes, &tables);
     let loca = Loca::new(ttf_bytes, &tables);
     let glyf = Glyf::new(ttf_bytes, &tables);
+    let hhea = Hhea::new(ttf_bytes, &tables);
+    let hmtx = Hmtx::new(ttf_bytes, &tables, hhea.num_of_long_hor_metrics as usize);
 
     TtfData {
         head,
         cmap,
         loca,
         glyf,
+        hhea,
+        hmtx,
     }
 }
 
-struct Glyph {
+#[derive(Debug, Clone)]
+pub struct Glyph {
     points: Vec<(i16, i16, bool)>,
     end_pts_of_contours: Vec<usize>,
     min: (i16, i16),
@@ -298,9 +349,6 @@ fn barycentric_coordinates(
     // Thank you zozin for this strange integer barycentric math:
     // https://github.com/tsoding/olive.c/blob/master/olive.c
 
-    // https://en.wikipedia.org/wiki/Barycentric_coordinate_system#Edge_approach
-    // TODO: subtraction overflow panic
-    // TODO: mult overflow panic
     let d = (v1x - v3x) * (v2y - v3y) - (v1y - v3y) * (v2x - v3x);
     if d.abs() < f32::EPSILON {
         return None;
@@ -447,7 +495,6 @@ impl<'a> CMap<'a> {
         let cmap_index = read_table::<CMapIndex>(ttf_bytes, tables, Self::CMAP);
         let version = cmap_index.version;
         assert_eq!(version, 0);
-        println!("{cmap_index:#?}");
 
         let cmap_table_base = table_entry(tables, Self::CMAP).offset as usize;
         let subtables_offset = cmap_table_base + core::mem::size_of::<CMapIndex>();
@@ -516,7 +563,7 @@ impl<'a> CMap<'a> {
         let mut i = 0;
         let end_code_len = self.end_code.len() / 2;
         while i < end_code_len {
-            if self.end_code(i) > c {
+            if self.end_code(i) >= c {
                 break;
             }
             i += 1
@@ -581,10 +628,7 @@ impl<'a> Loca<'a> {
 
     fn glyph_index_to_glyph_offset(&self, glyph_index: u16) -> usize {
         let index = glyph_index as usize * 4;
-        let mut glyph_offset_be_bytes = [0; 4];
-        glyph_offset_be_bytes.copy_from_slice(&self.loca_table[index..index + 4]);
-        let glyph_offset_start = u32::from_be_bytes(glyph_offset_be_bytes);
-        glyph_offset_start as usize
+        cast_be_slice::<u32, 4>(&self.loca_table[index..]) as usize
     }
 }
 
@@ -605,12 +649,23 @@ impl<'a> Glyf<'a> {
         }
     }
 
-    fn glyph_offset_to_glyph(&self, offset: usize) -> Glyph {
+    fn glyph_offset_to_glyph(&self, offset: usize, len: usize) -> Glyph {
         let start = offset;
-        let desc = GlyphDesc::read_from_slice(&self.glyf_table[start..]);
-        assert!(desc.number_of_contours >= 0, "cannot have compound glyphs");
-        // println!("`{}`: {desc:?}", g as u8 as char);
-        // println!("  {start}..{end}");
+        let desc_slice = &self.glyf_table[start..len];
+        if desc_slice.is_empty() {
+            return Glyph {
+                points: Vec::new(),
+                end_pts_of_contours: Vec::new(),
+                min: (0, 0),
+                max: (0, 0),
+            };
+        }
+
+        let desc = GlyphDesc::read_from_slice(desc_slice);
+        assert!(
+            desc.number_of_contours >= 0,
+            "compound glyphs not supported"
+        );
 
         let end_pts_start = start + core::mem::size_of::<GlyphDesc>();
         let end_pts_end = end_pts_start + desc.number_of_contours as usize * 2;
@@ -710,9 +765,6 @@ impl<'a> Glyf<'a> {
                 }
             }
         }
-        // println!("  remaining: {}", end + glyf_offset - y_index);
-        // println!("  xpoints: {xpoints:?}");
-
         let mut accumx = 0;
         let mut accumy = 0;
         Glyph {
@@ -730,6 +782,99 @@ impl<'a> Glyf<'a> {
             min: (desc.xmin, desc.ymin),
             max: (desc.xmax, desc.ymax),
         }
+    }
+}
+
+fix_endianness! {
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct Hhea {
+        version: Fixed,
+        ascent: i16,
+        descent: i16,
+        line_gap: i16,
+        advance_width_max: u16,
+        min_left_side_bearing: i16,
+        min_right_side_breaing: i16,
+        xmax_extent: i16,
+        caret_slope_rise: i16,
+        caret_slope_run: i16,
+        caret_offset: i16,
+        //
+        res0: i16,
+        res1: i16,
+        res2: i16,
+        res3: i16,
+        //
+        metric_data_format: i16,
+        num_of_long_hor_metrics: u16,
+    }
+}
+
+impl Hhea {
+    const HHEA: u32 = tag!(b'h', b'h', b'e', b'a');
+
+    fn new(ttf_bytes: &[u8], tables: &[TableEntry]) -> Self {
+        let hhea = read_table::<Self>(ttf_bytes, tables, Self::HHEA);
+        assert_eq!(hhea.version.integer, 1);
+        assert_eq!(hhea.res0, 0);
+        assert_eq!(hhea.res1, 0);
+        assert_eq!(hhea.res2, 0);
+        assert_eq!(hhea.res3, 0);
+        assert_eq!(hhea.metric_data_format, 0);
+        hhea
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Hmtx<'a> {
+    horizontal_metrics: &'a [u8],
+    num_of_long_hor_metrics: usize,
+}
+
+impl<'a> Hmtx<'a> {
+    const HMTX: u32 = tag!(b'h', b'm', b't', b'x');
+
+    fn new(ttf_bytes: &'a [u8], tables: &[TableEntry], num_of_long_hor_metrics: usize) -> Self {
+        let hmtx_entry = table_entry(tables, Self::HMTX);
+        let horizontal_metrics = &ttf_bytes
+            [hmtx_entry.offset as usize..(hmtx_entry.offset + hmtx_entry.length) as usize];
+
+        Self {
+            horizontal_metrics,
+            num_of_long_hor_metrics,
+        }
+    }
+
+    fn horizontal_metric(&self, glyph_index: u16) -> HorizontalMetric {
+        let glyph_index = glyph_index as usize;
+        let metric_size = core::mem::size_of::<HorizontalMetric>();
+        let offset = glyph_index * metric_size;
+        assert!(glyph_index < self.num_of_long_hor_metrics);
+        cast_be_slice::<HorizontalMetric, { core::mem::size_of::<HorizontalMetric>() }>(
+            &self.horizontal_metrics[offset..offset + metric_size],
+        )
+
+        // TODO: https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6hmtx.html
+        // if glyph_index < self.num_of_long_hor_metrics {
+        //     cast_be_slice::<HorizontalMetric, { core::mem::size_of::<HorizontalMetric>() }>(
+        //         &self.horizontal_metrics[offset..offset + metric_size],
+        //     )
+        // } else {
+        //     HorizontalMetric {
+        //         advance_width: 1000,
+        //         left_side_bearing: 0,
+        //     }
+        // }
+    }
+}
+
+fix_endianness! {
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HorizontalMetric {
+        advance_width: u16,
+        left_side_bearing: i16,
     }
 }
 
@@ -776,8 +921,6 @@ macro_rules! fix_endianness_prim {
     ($ident:ident) => {
         impl FixEndianness for $ident {
             fn fix_endianness(self) -> Self {
-                // assert native system is le
-                assert_eq!(0b01, 0b01u8.to_le());
                 Self::from_be_bytes(self.to_le_bytes())
             }
         }
@@ -824,3 +967,122 @@ fn cast_be_slice<T: Copy + FixEndianness, const SIZE: usize>(slice: &[u8]) -> T 
     let ptr = slice_be_bytes.as_ptr() as *const T;
     unsafe { *ptr }.fix_endianness()
 }
+
+// TODO: support open type
+// fix_endianness! {
+//     #[repr(C)]
+//     #[derive(Debug, Clone, Copy)]
+//     pub struct GsubHeader {
+//         major_version: u16,
+//         minor_version: u16,
+//         script_list_offset: u16,
+//         feature_list_offset: u16,
+//         lookup_list_offset: u16,
+//     }
+// }
+//
+// impl GsubHeader {
+//     const GSUB: u32 = tag!(b'G', b'S', b'U', b'B');
+//
+//     fn new(ttf_bytes: &[u8], tables: &[TableEntry]) -> Self {
+//         let header = read_table::<Self>(ttf_bytes, tables, Self::GSUB);
+//         assert_eq!(header.major_version, 1);
+//         assert!(header.minor_version == 0 || header.minor_version == 1);
+//         header
+//     }
+// }
+//
+// #[derive(Debug, Clone, Copy)]
+// pub struct Gsub<'a> {
+//     header: GsubHeader,
+//     lookup_count: u16,
+//     offsets: &'a [u8],
+//     lookup_list_offset: usize,
+//     ttf_bytes: &'a [u8],
+// }
+//
+// impl<'a> Gsub<'a> {
+//     fn new(ttf_bytes: &'a [u8], tables: &[TableEntry]) -> Self {
+//         let header = GsubHeader::new(ttf_bytes, tables);
+//         let header_offset = table_entry(tables, GsubHeader::GSUB).offset as usize;
+//         let lookup_offset = header_offset + header.lookup_list_offset as usize;
+//         let lookup_count =
+//             u16::from_be_bytes([ttf_bytes[lookup_offset], ttf_bytes[lookup_offset + 1]]);
+//         let offsets = lookup_offset + 2;
+//         let offsets_size = lookup_count as usize * core::mem::size_of::<u16>();
+//
+//         Self {
+//             header,
+//             lookup_count,
+//             offsets: &ttf_bytes[offsets..offsets + offsets_size],
+//             lookup_list_offset: lookup_offset,
+//             ttf_bytes,
+//         }
+//     }
+//
+//     fn lookup_subtables(&self) {
+//         for i in 0..self.lookup_count as usize {
+//             let offset_offset = i * 2;
+//             let lookup_table_offset = self.lookup_list_offset
+//                 + cast_be_slice::<u16, 2>(&self.offsets[offset_offset..]) as usize;
+//             let lookup_header =
+//                 LookupHeader::read_from_slice(&self.ttf_bytes[lookup_table_offset..]);
+//
+//             // single lookup
+//             if lookup_header.lookup_type != 1 {
+//                 continue;
+//             }
+//
+//             let subtable_start_offset = lookup_table_offset + core::mem::size_of::<LookupHeader>();
+//             for i in 0..lookup_header.sub_table_count as usize {
+//                 let offset_pos = subtable_start_offset + i * 2;
+//
+//                 let subtable_offset = lookup_table_offset
+//                     + cast_be_slice::<u16, 2>(&self.ttf_bytes[offset_pos..]) as usize;
+//                 let format = cast_be_slice::<u16, 2>(&self.ttf_bytes[subtable_offset..]);
+//
+//                 // single substitution format 1
+//                 if format == 1 {
+//                     let coverage_offset =
+//                         cast_be_slice::<u16, 2>(&self.ttf_bytes[subtable_offset + 2..]);
+//                     let delta = cast_be_slice::<i16, 2>(&self.ttf_bytes[subtable_offset + 4..]);
+//
+//                     println!("subtable_offset: {subtable_offset}");
+//                     println!("  coverage_offset: {coverage_offset}");
+//                     println!("  delta: {delta}");
+//
+//                     let coverage_absolute_offset = coverage_offset as usize + subtable_offset;
+//                     let coverage_format =
+//                         cast_be_slice::<u16, 2>(&self.ttf_bytes[coverage_absolute_offset..]);
+//                     println!("    coverage_format: {coverage_format}");
+//
+//                     match coverage_format {
+//                         1 => {
+//                             let glyph_count = cast_be_slice::<u16, 2>(
+//                                 &self.ttf_bytes[coverage_absolute_offset + 2..],
+//                             );
+//                             println!("    glyph_count: {glyph_count}");
+//                         }
+//                         2 => {
+//                             let range_count = cast_be_slice::<u16, 2>(
+//                                 &self.ttf_bytes[coverage_absolute_offset + 2..],
+//                             );
+//                             println!("    range_count: {range_count}");
+//                         }
+//                         format => panic!("invalid coverage format {format}"),
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// }
+//
+// fix_endianness! {
+//     #[repr(C)]
+//     #[derive(Debug, Clone, Copy)]
+//     pub struct LookupHeader {
+//         lookup_type: u16,
+//         lookup_flag: u16,
+//         sub_table_count: u16,
+//     }
+// }

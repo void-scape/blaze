@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 tint = { path = "../tint" }
-libm = "0.2.15"
+libm = { workspace = true }
