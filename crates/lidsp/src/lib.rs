@@ -5,7 +5,7 @@
 macro_rules! mix {
     ($output:expr, $($samples:expr),+) => {
         let output_len = $output.len();
-        $(debug_assert_eq!($samples.len(), output_len);)*
+        $(debug_assert!($samples.len() >= output_len);)*
         for i in 0..output_len {
             let mut sum = 0f32;
             $(sum += $samples[i];)+
@@ -34,12 +34,12 @@ pub fn sine(
     sample_rate: f32,
     channels: usize,
     phase: &mut f32,
-    frequency: f32,
+    mut frequency: impl FnMut() -> f32,
 ) {
     debug_assert!(samples.len().is_multiple_of(channels));
     use core::f32::consts::TAU;
     for frame in samples.chunks_mut(channels) {
-        phase_inc(sample_rate, phase, frequency);
+        phase_inc(sample_rate, phase, frequency());
         let s = libm::sinf(*phase * TAU);
         frame.fill(s);
     }
@@ -51,11 +51,11 @@ pub fn triangle(
     sample_rate: f32,
     channels: usize,
     phase: &mut f32,
-    frequency: f32,
+    mut frequency: impl FnMut() -> f32,
 ) {
     debug_assert!(samples.len().is_multiple_of(channels));
     for frame in samples.chunks_mut(channels) {
-        phase_inc(sample_rate, phase, frequency);
+        phase_inc(sample_rate, phase, frequency());
         let s = if *phase < 0.5 {
             4.0 * *phase - 1.0
         } else {
@@ -71,12 +71,12 @@ pub fn square(
     sample_rate: f32,
     channels: usize,
     phase: &mut f32,
-    frequency: f32,
+    mut frequency: impl FnMut() -> f32,
     duty_cycle: f32,
 ) {
     debug_assert!(samples.len().is_multiple_of(channels));
     for frame in samples.chunks_mut(channels) {
-        phase_inc(sample_rate, phase, frequency);
+        phase_inc(sample_rate, phase, frequency());
         let s = if *phase < duty_cycle { 1.0 } else { 0.0 };
         frame.fill(s);
     }

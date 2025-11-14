@@ -1,15 +1,30 @@
 #![no_std]
 extern crate alloc;
 
-#[cfg(target_os = "macos")]
-mod appkit;
-#[cfg(target_os = "macos")]
-use appkit as platform;
+#[cfg(feature = "generic")]
+mod generic;
+#[cfg(feature = "generic")]
+use generic as platform;
 
-#[cfg(not(any(target_os = "macos")))]
+#[cfg(not(feature = "generic"))]
 mod unsupported;
-#[cfg(not(any(target_os = "macos")))]
+#[cfg(not(feature = "generic"))]
 use unsupported as platform;
+
+#[macro_export]
+macro_rules! static_frame_buffer {
+    ($width:expr, $height:expr, $type:ty, $init:expr) => {{
+        static mut FRAME_BUFFER: [$type; $width * $height] = [$init; $width * $height];
+        // ## Safety
+        //
+        // `FRAME_BUFFER` is locally scoped to this macro invocation. There cannot
+        // exist any other mutable references to `FRAME_BUFFER` with safe Rust code.
+        unsafe {
+            #[allow(static_mut_refs)]
+            &mut FRAME_BUFFER
+        }
+    }};
+}
 
 pub fn run<Memory, Pixels>(
     memory: Memory,
@@ -21,7 +36,7 @@ pub fn run<Memory, Pixels>(
     shared_lib_path: Option<&str>,
 ) where
     Pixels: 'static,
-    Memory: 'static,
+    Memory: 'static + Send,
 {
     assert!(
         core::mem::size_of::<Pixels>() == 4,
@@ -52,8 +67,11 @@ pub struct PlatformUpdate<'a, T, Pixels> {
 
     // audio
     pub samples: &'a mut [f32],
-    pub sample_rate: f32,
+    pub sample_rate: u32,
     pub channels: usize,
+
+    // debug
+    pub reloaded: bool,
 }
 
 #[derive(Debug)]
@@ -194,6 +212,8 @@ impl core::ops::BitAnd for KeyModifiers {
 
 // Debug utility
 
+pub use platform::{debug_time_micros, debug_time_millis, debug_time_nanos, debug_time_secs};
+
 #[macro_export]
 macro_rules! log {
     () => {
@@ -209,20 +229,4 @@ macro_rules! log {
 #[doc(hidden)]
 pub fn __log(str: &str) {
     platform::log(str);
-}
-
-pub fn debug_time_secs<R>(f: impl FnMut() -> R) -> (f32, R) {
-    platform::debug_time_secs(f)
-}
-
-pub fn debug_time_millis<R>(f: impl FnMut() -> R) -> (u128, R) {
-    platform::debug_time_millis(f)
-}
-
-pub fn debug_time_micros<R>(f: impl FnMut() -> R) -> (u128, R) {
-    platform::debug_time_micros(f)
-}
-
-pub fn debug_time_nanos<R>(f: impl FnMut() -> R) -> (u128, R) {
-    platform::debug_time_nanos(f)
 }

@@ -4,59 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["std"]
-std = []
+default = ["generic"]
+generic = ["dep:libc", "dep:winit", "dep:softbuffer", "dep:cpal"]
 
-[target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2.176"
-objc2-foundation = { version = "0.3.1", default-features = false, features = [
-    "std",
-    "alloc",
-    "NSTimer",
-] }
-objc2 = { version = "0.6.2", default-features = false, features = [
-    "std",
-    "alloc",
-] }
-objc2-app-kit = { version = "0.3.1", default-features = false, features = [
-    "std",
-    "alloc",
-    "objc2-core-foundation",
-    "NSApplication",
-    "NSResponder",
-    "NSRunningApplication",
-    "NSGraphics",
-    "NSBitmapImageRep",
-    "NSImageRep",
-    "NSImage",
-    "NSView",
-    "NSWindow",
-    "NSEvent",
-] }
-objc2-audio-toolbox = { version = "0.3.1", default-features = false, features = [
-    "AUComponent",
-    "AudioComponent",
-    "AudioOutputUnit",
-    "AudioUnitProperties",
-    "objc2-core-audio-types",
-] }
-objc2-core-audio-types = { version = "0.3.1", default-features = false, features = [
-    "CoreAudioBaseTypes",
-] }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "0.2", default-features = false }
-web-sys = { version = "0.3", default-features = false, features = [
-    "console",
-    "AudioContext",
-    "AudioBuffer",
-    "AudioBufferSourceNode",
-    "AudioDestinationNode",
-    "CanvasRenderingContext2d",
-    "HtmlCanvasElement",
-    "ImageData",
-    "AudioProcessingEvent",
-    "Window",
-    "ScriptProcessorNode",
-    "Document",
-] }
+[dependencies]
+libc = { version = "0.2.176", optional = true }
+winit = { version = "0.30.12", optional = true }
+softbuffer = { version = "0.4.6", optional = true }
+cpal = { version = "0.15", optional = true }
