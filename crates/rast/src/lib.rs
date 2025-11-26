@@ -193,7 +193,15 @@ fn rast_triangle_inner<S: Shader, Pixel: Color>(
                     zbuffer[index] = z;
                 }
                 let vd = shader.interpolate(bcx, bcy, bcz, d1, d2, d3);
-                pixels[index] = shader.fragment(vd).into();
+                let frag = shader.fragment(vd);
+                let blend_mode = shader.blend_mode();
+                if matches!(blend_mode, BlendMode::None) {
+                    pixels[index] = frag.into();
+                } else {
+                    let src = pixels[index].into();
+                    let color = shader.blend_mode().blend(frag, src);
+                    pixels[index] = color.into();
+                }
             }
         }
     }
@@ -636,13 +644,10 @@ pub fn rast_triangle_wireframe<Pixel: Copy>(
     height: usize,
     v1x: i32,
     v1y: i32,
-    v1z: f32,
     v2x: i32,
     v2y: i32,
-    v2z: f32,
     v3x: i32,
     v3y: i32,
-    v3z: f32,
     c: Pixel,
 ) {
     #[rustfmt::skip]
@@ -650,8 +655,8 @@ pub fn rast_triangle_wireframe<Pixel: Copy>(
         pixels,
         width,
         height,
-        v1x, v1y, v1z,
-        v2x, v2y, v2z,
+        v1x, v1y, 0.0,
+        v2x, v2y, 0.0,
         c,
     );
     #[rustfmt::skip]
@@ -659,8 +664,8 @@ pub fn rast_triangle_wireframe<Pixel: Copy>(
         pixels,
         width,
         height,
-        v1x, v1y, v1z,
-        v3x, v3y, v3z,
+        v1x, v1y, 0.0,
+        v3x, v3y, 0.0,
         c,
     );
     #[rustfmt::skip]
@@ -668,8 +673,8 @@ pub fn rast_triangle_wireframe<Pixel: Copy>(
         pixels,
         width,
         height,
-        v2x, v2y, v2z,
-        v3x, v3y, v3z,
+        v2x, v2y, 0.0,
+        v3x, v3y, 0.0,
         c,
     );
 }
@@ -736,14 +741,49 @@ pub trait Shader {
     ) -> Self::VertexData;
 
     #[inline]
+    fn blend_mode(&self) -> BlendMode {
+        BlendMode::None
+    }
+
+    #[inline]
     fn vertex(&mut self, x: i32, y: i32, z: f32) -> (i32, i32, f32) {
         (x, y, z)
     }
 
-    #[inline]
     fn fragment(&mut self, data: Self::VertexData) -> LinearRgb {
         let _ = data;
         LinearRgb::from_rgb(1.0, 1.0, 1.0)
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub enum BlendMode {
+    #[default]
+    None,
+    Alpha,
+    Additive,
+    Multiply,
+}
+
+impl BlendMode {
+    #[inline]
+    pub fn blend(&self, c1: LinearRgb, c2: LinearRgb) -> LinearRgb {
+        match self {
+            Self::None => c1,
+            Self::Alpha => {
+                let [c1r, c1g, c1b, c1a] = c1.to_array();
+                let [c2r, c2g, c2b, c2a] = c2.to_array();
+                let sa = 1.0 - c1a;
+                LinearRgb::new(
+                    c1r * c1a + c2r * sa,
+                    c1g * c1a + c2g * sa,
+                    c1b * c1a + c2b * sa,
+                    c1a + c2a * sa,
+                )
+            }
+            Self::Additive => c1 + c2,
+            Self::Multiply => c1 * c2,
+        }
     }
 }
 
@@ -755,11 +795,11 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct FnShader<V, F, D>(V, F, PhantomData<D>);
+pub struct FnShader<V, F, D>(V, F, BlendMode, PhantomData<D>);
 
 impl<V, F, D> FnShader<V, F, D> {
-    pub fn new(vertex: V, fragment: F) -> Self {
-        Self(vertex, fragment, PhantomData)
+    pub fn new(blend_mode: BlendMode, vertex: V, fragment: F) -> Self {
+        Self(vertex, fragment, blend_mode, PhantomData)
     }
 }
 
@@ -771,7 +811,6 @@ where
 {
     type VertexData = D;
 
-    #[inline]
     fn interpolate(
         &self,
         bcx: f32,
@@ -782,6 +821,11 @@ where
         d3: Self::VertexData,
     ) -> Self::VertexData {
         barycentric_lerp(bcx, bcy, bcz, d1, d2, d3)
+    }
+
+    #[inline]
+    fn blend_mode(&self) -> BlendMode {
+        self.2
     }
 
     #[inline]
@@ -789,19 +833,17 @@ where
         self.0(x, y, z)
     }
 
-    #[inline]
     fn fragment(&mut self, data: Self::VertexData) -> LinearRgb {
         self.1(data)
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ColorShader;
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ColorShader(BlendMode);
 
 impl Shader for ColorShader {
     type VertexData = LinearRgb;
 
-    #[inline]
     fn interpolate(
         &self,
         bcx: f32,
@@ -815,6 +857,10 @@ impl Shader for ColorShader {
     }
 
     #[inline]
+    fn blend_mode(&self) -> BlendMode {
+        self.0
+    }
+
     fn fragment(&mut self, data: Self::VertexData) -> LinearRgb {
         data
     }
@@ -826,6 +872,7 @@ pub struct TextureShader<'a, T> {
     pub width: usize,
     pub height: usize,
     pub sampler: Sampler,
+    pub blend_mode: BlendMode,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -852,6 +899,11 @@ where
         let u = barycentric_lerp(bcx, bcy, bcz, d1.0, d2.0, d3.0);
         let v = barycentric_lerp(bcx, bcy, bcz, d1.1, d2.1, d3.1);
         (u, v)
+    }
+
+    #[inline]
+    fn blend_mode(&self) -> BlendMode {
+        self.blend_mode
     }
 
     fn fragment(&mut self, data: Self::VertexData) -> LinearRgb {
@@ -886,40 +938,6 @@ where
                 let bottom = c01 * (1.0 - dx) + c11 * dx;
                 top * (1.0 - dy) + bottom * dy
             }
-        }
-    }
-}
-
-pub mod empty {
-    use crate::Shader;
-
-    pub struct EmptyShader;
-    impl Shader for EmptyShader {
-        type VertexData = EmptyVertexData;
-        fn interpolate(
-            &self,
-            _bcx: f32,
-            _bcy: f32,
-            _bcz: f32,
-            _d1: Self::VertexData,
-            _d2: Self::VertexData,
-            _d3: Self::VertexData,
-        ) -> Self::VertexData {
-            EmptyVertexData
-        }
-    }
-    #[derive(Clone, Copy)]
-    pub struct EmptyVertexData;
-    impl core::ops::Add for EmptyVertexData {
-        type Output = Self;
-        fn add(self, _: Self) -> Self::Output {
-            EmptyVertexData
-        }
-    }
-    impl core::ops::Mul<f32> for EmptyVertexData {
-        type Output = Self;
-        fn mul(self, _: f32) -> Self::Output {
-            EmptyVertexData
         }
     }
 }

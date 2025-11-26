@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["generic"]
-generic = ["dep:libc", "dep:winit", "dep:softbuffer", "dep:cpal"]
+generic = ["libc", "winit", "softbuffer", "cpal"]
 
 [dependencies]
 libc = { version = "0.2.176", optional = true }

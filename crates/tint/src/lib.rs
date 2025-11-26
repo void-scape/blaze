@@ -41,11 +41,14 @@
 ///
 /// Implemented by all `tint` color primitives.
 pub trait Color:
-    From<Srgb> + From<LinearRgb> + From<Hsv> + Into<Srgb> + Into<LinearRgb> + Into<Hsv>
+    Copy + From<Srgb> + From<LinearRgb> + From<Hsv> + Into<Srgb> + Into<LinearRgb> + Into<Hsv>
 {
     fn to_srgb(self) -> Srgb;
     fn to_linear(self) -> LinearRgb;
     fn to_hsv(self) -> Hsv;
+
+    fn alpha(&self) -> f32;
+    fn set_alpha(&mut self, alpha: f32);
 }
 
 /// A color within the [Linear sRGB colorspace].
@@ -57,6 +60,7 @@ pub trait Color:
 /// [Linear sRGB colorspace]: https://facelessuser.github.io/coloraide/colors/srgb_linear
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LinearRgb {
     r: f32,
     g: f32,
@@ -163,6 +167,14 @@ impl Color for LinearRgb {
 
         Hsv { h, s, v, a: self.a }
     }
+
+    fn alpha(&self) -> f32 {
+        self.a
+    }
+
+    fn set_alpha(&mut self, alpha: f32) {
+        self.a = alpha.clamp(0.0, 1.0);
+    }
 }
 
 impl From<Srgb> for LinearRgb {
@@ -247,6 +259,7 @@ channel_wise_assign!(DivAssign, div_assign, /);
 /// [non-linear]: https://en.wikipedia.org/wiki/RGB_color_model#Nonlinearity
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Srgb {
     r: u8,
     g: u8,
@@ -310,6 +323,14 @@ impl Color for Srgb {
     fn to_hsv(self) -> Hsv {
         self.to_linear().to_hsv()
     }
+
+    fn alpha(&self) -> f32 {
+        self.a as f32 / u8::MAX as f32
+    }
+
+    fn set_alpha(&mut self, alpha: f32) {
+        self.a = (alpha.clamp(0.0, 1.0) * u8::MAX as f32) as u8;
+    }
 }
 
 impl From<LinearRgb> for Srgb {
@@ -334,6 +355,7 @@ impl From<Hsv> for Srgb {
 /// [HSV colorspace]: https://en.wikipedia.org/wiki/HSL_and_HSV
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Hsv {
     h: f32,
     s: f32,
@@ -422,6 +444,14 @@ impl Color for Hsv {
 
     fn to_hsv(self) -> Hsv {
         self
+    }
+
+    fn alpha(&self) -> f32 {
+        self.a
+    }
+
+    fn set_alpha(&mut self, alpha: f32) {
+        self.a = alpha.clamp(0.0, 1.0);
     }
 }
 

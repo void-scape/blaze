@@ -1,6 +1,11 @@
 #![no_std]
 extern crate alloc;
 
+#[cfg(all(target_os = "macos", not(feature = "generic")))]
+mod appkit;
+#[cfg(all(target_os = "macos", not(feature = "generic")))]
+use appkit as platform;
+
 #[cfg(feature = "generic")]
 mod generic;
 #[cfg(feature = "generic")]

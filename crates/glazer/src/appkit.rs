@@ -258,7 +258,7 @@ fn run_app(
 ) {
     let app = init_app(update, frame_buffer, width, height);
     init_audio();
-    app.finishLaunching();
+    unsafe { app.finishLaunching() };
     app.run();
 }
 
@@ -308,7 +308,7 @@ define_class!(
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _notification: &NSNotification) {
             // Quit the application when the window is closed.
-            NSApplication::sharedApplication(self.mtm()).terminate(None);
+            unsafe {NSApplication::sharedApplication(self.mtm()).terminate(None);}
         }
     }
 );
@@ -392,6 +392,7 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            unsafe {
             let mut update = self.ivars().update.borrow_mut();
                 update(PlatformRequest::Input(Input::Key {
                     code: KEY_CODE_LUT[event.keyCode() as usize],
@@ -399,10 +400,12 @@ define_class!(
                     pressed: true,
                     repeat: event.isARepeat(),
                 }));
+            }
         }
 
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
+            unsafe {
             let mut update = self.ivars().update.borrow_mut();
                 update(PlatformRequest::Input(Input::Key {
                     code: KEY_CODE_LUT[event.keyCode() as usize],
@@ -410,22 +413,25 @@ define_class!(
                     pressed: false,
                     repeat: event.isARepeat(),
                 }));
+            }
         }
 
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
+            unsafe {
             let mut update = self.ivars().update.borrow_mut();
                 update(PlatformRequest::Input(Input::MouseMoved {
                     dx: event.deltaX() as f32,
                     dy: event.deltaY() as f32,
                 }));
+            }
         }
 
         #[unsafe(method(flagsChanged:))]
         fn flags_changed(&self, event: &NSEvent) {
             static mut PREVIOUS_MODIFIER_FLAGS: NSEventModifierFlags = NSEventModifierFlags(0);
 
-                let current_flags = event.modifierFlags();
+                let current_flags = unsafe {event.modifierFlags()};
                 #[allow(static_mut_refs)]
                 let changed = unsafe { current_flags.bits() ^ PREVIOUS_MODIFIER_FLAGS.bits() };
                 unsafe { PREVIOUS_MODIFIER_FLAGS = current_flags; }
