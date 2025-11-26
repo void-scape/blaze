@@ -1,4 +1,7 @@
 #![allow(clippy::type_complexity)]
+#![allow(unused_unsafe)]
+// OpenGL on macos is deprecated
+#![allow(deprecated)]
 
 extern crate std;
 
@@ -11,7 +14,7 @@ use std::time::Instant;
 use std::{dbg, format};
 
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
@@ -35,6 +38,8 @@ use objc2_foundation::{
     NSString, NSTimer, ns_string,
 };
 
+#[cfg(feature = "opengl")]
+use crate::PlatformUpdateGL;
 use crate::{Input, KeyCode, KeyModifiers, PlatformInput, PlatformUpdate};
 
 enum PlatformRequest<'a> {
@@ -51,7 +56,7 @@ struct PlatformState<'a> {
     //
     samples: &'a mut [f32],
     channels: usize,
-    sample_rate: f32,
+    sample_rate: u32,
 }
 
 pub fn run<Memory, Pixels>(
@@ -67,9 +72,9 @@ pub fn run<Memory, Pixels>(
     Memory: 'static,
 {
     if let Some(shared_lib_path) = shared_lib_path {
-        run_dynamic(memory, frame_buffer, width, height, shared_lib_path);
+        software_renderer::run_dynamic(memory, frame_buffer, width, height, shared_lib_path);
     } else {
-        run_static(
+        software_renderer::run_static(
             memory,
             frame_buffer,
             width,
@@ -80,186 +85,767 @@ pub fn run<Memory, Pixels>(
     }
 }
 
-fn run_static<Memory, Pixels>(
-    mut memory: Memory,
-    frame_buffer: &mut [Pixels],
-    width: usize,
-    height: usize,
-    handle_input: fn(PlatformInput<Memory>),
-    update_and_render: fn(PlatformUpdate<Memory, Pixels>),
-) where
-    Pixels: 'static,
-    Memory: 'static,
-{
-    let pixels_len = frame_buffer.len();
-    let update = move |req: PlatformRequest| {
-        match req {
-            PlatformRequest::Update(state) => {
-                debug_assert!(pixels_len >= state.width * state.height);
-                update_and_render(PlatformUpdate {
+mod software_renderer {
+    use super::*;
+
+    pub fn run_static<Memory, Pixels>(
+        mut memory: Memory,
+        frame_buffer: &mut [Pixels],
+        width: usize,
+        height: usize,
+        handle_input: fn(PlatformInput<Memory>),
+        update_and_render: fn(PlatformUpdate<Memory, Pixels>),
+    ) where
+        Pixels: 'static,
+        Memory: 'static,
+    {
+        let pixels_len = frame_buffer.len();
+        let update = move |req: PlatformRequest| {
+            match req {
+                PlatformRequest::Update(state) => {
+                    debug_assert!(pixels_len >= state.width * state.height);
+                    update_and_render(PlatformUpdate {
+                        memory: &mut memory,
+                        delta: state.delta,
+                        //
+                        frame_buffer: unsafe {
+                            core::slice::from_raw_parts_mut(
+                                state.frame_buffer as *mut _,
+                                state.width * state.height,
+                            )
+                        },
+                        width: state.width,
+                        height: state.height,
+                        //
+                        samples: state.samples,
+                        sample_rate: state.sample_rate,
+                        channels: state.channels,
+                        //
+                        reloaded: false,
+                    })
+                }
+                PlatformRequest::Input(input) => handle_input(PlatformInput {
                     memory: &mut memory,
-                    delta: state.delta,
-                    //
-                    frame_buffer: unsafe {
-                        core::slice::from_raw_parts_mut(
-                            state.frame_buffer as *mut _,
-                            state.width * state.height,
-                        )
-                    },
-                    width: state.width,
-                    height: state.height,
-                    //
-                    samples: state.samples,
-                    sample_rate: state.sample_rate,
-                    channels: state.channels,
-                })
+                    input,
+                }),
             }
-            PlatformRequest::Input(input) => handle_input(PlatformInput {
-                memory: &mut memory,
-                input,
-            }),
-        }
-    };
-    run_app(frame_buffer.as_mut_ptr() as *mut u8, width, height, update);
-}
+        };
+        run_app(frame_buffer.as_mut_ptr() as *mut u8, width, height, update);
+    }
 
-pub fn run_dynamic<Memory, Pixels>(
-    mut memory: Memory,
-    frame_buffer: &mut [Pixels],
-    width: usize,
-    height: usize,
-    shared_lib_path: &str,
-) where
-    Pixels: 'static,
-    Memory: 'static,
-{
-    use alloc::string::ToString;
+    pub fn run_dynamic<Memory, Pixels>(
+        mut memory: Memory,
+        frame_buffer: &mut [Pixels],
+        width: usize,
+        height: usize,
+        shared_lib_path: &str,
+    ) where
+        Pixels: 'static,
+        Memory: 'static,
+    {
+        use alloc::string::ToString;
 
-    let shared_lib_path = shared_lib_path.to_string();
-    let mut functions =
-        load_game_dylib::<Memory, Pixels>(&shared_lib_path).expect("failed to load game dylib");
-    let mut loaded_instant = std::time::SystemTime::now();
+        let shared_lib_path = shared_lib_path.to_string();
+        let mut functions =
+            load_game_dylib::<Memory, Pixels>(&shared_lib_path).expect("failed to load game dylib");
+        let mut loaded_instant = std::time::SystemTime::now();
+        let mut reloaded = false;
 
-    let pixels_len = frame_buffer.len();
-    let update = move |req: PlatformRequest| {
-        if let Some(modified) = std::fs::metadata(&shared_lib_path).ok().and_then(|meta| {
-            meta.modified().ok().and_then(|modified| {
-                modified
-                    .duration_since(loaded_instant)
-                    .is_ok_and(|dur| !dur.is_zero())
-                    .then_some(modified)
-            })
-        }) {
-            // NOTE: This does nothing, macos never closes dylibs.
-            debug_assert_eq!(unsafe { libc::dlclose(functions.dylib) }, 0);
-            functions = load_game_dylib::<Memory, Pixels>(&shared_lib_path)
-                .expect("failed to load game dylib");
-            loaded_instant = modified;
-        }
+        let pixels_len = frame_buffer.len();
+        let update = move |req: PlatformRequest| {
+            if let Some(modified) = std::fs::metadata(&shared_lib_path).ok().and_then(|meta| {
+                meta.modified().ok().and_then(|modified| {
+                    modified
+                        .duration_since(loaded_instant)
+                        .is_ok_and(|dur| !dur.is_zero())
+                        .then_some(modified)
+                })
+            }) {
+                // NOTE: This does nothing, macos never closes dylibs.
+                debug_assert_eq!(unsafe { libc::dlclose(functions.dylib) }, 0);
+                functions = load_game_dylib::<Memory, Pixels>(&shared_lib_path)
+                    .expect("failed to load game dylib");
+                loaded_instant = modified;
+                reloaded = true;
+            }
 
-        match req {
-            PlatformRequest::Update(state) => {
-                debug_assert!(pixels_len >= state.width * state.height);
-                (functions.update_and_render)(PlatformUpdate {
+            match req {
+                PlatformRequest::Update(state) => {
+                    debug_assert!(pixels_len >= state.width * state.height);
+                    (functions.update_and_render)(PlatformUpdate {
+                        memory: &mut memory,
+                        delta: state.delta,
+                        //
+                        frame_buffer: unsafe {
+                            core::slice::from_raw_parts_mut(
+                                state.frame_buffer as *mut _,
+                                state.width * state.height,
+                            )
+                        },
+                        width: state.width,
+                        height: state.height,
+                        //
+                        samples: state.samples,
+                        sample_rate: state.sample_rate,
+                        channels: state.channels,
+                        //
+                        reloaded,
+                    });
+                    reloaded = false;
+                }
+                PlatformRequest::Input(input) => (functions.handle_input)(PlatformInput {
                     memory: &mut memory,
-                    delta: state.delta,
-                    //
-                    frame_buffer: unsafe {
-                        core::slice::from_raw_parts_mut(
-                            state.frame_buffer as *mut _,
-                            state.width * state.height,
-                        )
-                    },
-                    width: state.width,
-                    height: state.height,
-                    //
-                    samples: state.samples,
-                    sample_rate: state.sample_rate,
-                    channels: state.channels,
-                })
+                    input,
+                }),
             }
-            PlatformRequest::Input(input) => (functions.handle_input)(PlatformInput {
-                memory: &mut memory,
-                input,
-            }),
-        }
-    };
-    run_app(frame_buffer.as_mut_ptr() as *mut u8, width, height, update);
-}
+        };
+        run_app(frame_buffer.as_mut_ptr() as *mut u8, width, height, update);
+    }
 
-struct LoadedGameFunctions<Memory, Pixels> {
-    dylib: *mut c_void,
-    handle_input: fn(PlatformInput<Memory>),
-    update_and_render: fn(PlatformUpdate<Memory, Pixels>),
-}
+    struct LoadedGameFunctions<Memory, Pixels> {
+        dylib: *mut c_void,
+        handle_input: fn(PlatformInput<Memory>),
+        update_and_render: fn(PlatformUpdate<Memory, Pixels>),
+    }
 
-fn load_game_dylib<Memory, Pixels>(path: &str) -> Option<LoadedGameFunctions<Memory, Pixels>> {
-    use alloc::ffi::CString;
-    use core::ffi::CStr;
+    fn load_game_dylib<Memory, Pixels>(path: &str) -> Option<LoadedGameFunctions<Memory, Pixels>> {
+        use alloc::ffi::CString;
+        use core::ffi::CStr;
 
-    crate::log!("loading game functions from `{path}`");
+        crate::log!("loading game functions from `{path}`");
 
-    let mut copy = std::path::PathBuf::from(path);
-    let time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
-    copy.pop();
-    copy.push(format!("{}", time.as_millis()));
-    std::fs::copy(path, &copy).expect("failed to copy dylib");
+        let mut copy = std::path::PathBuf::from(path);
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        copy.pop();
+        copy.push(format!("{}", time.as_millis()));
+        std::fs::copy(path, &copy).expect("failed to copy dylib");
 
-    let filename = CString::new(copy.to_str().unwrap()).expect("invalid dylib string");
-    let dylib = unsafe { libc::dlopen(filename.as_ptr(), libc::RTLD_LOCAL | libc::RTLD_LAZY) };
-    if !dylib.is_null() {
-        let symbol = unsafe { libc::dlsym(dylib, c"update_and_render".as_ptr().cast()) };
-        if !symbol.is_null() {
-            let update_and_render: fn(PlatformUpdate<Memory, Pixels>) =
-                unsafe { std::mem::transmute(symbol as *const ()) };
-
-            let symbol = unsafe { libc::dlsym(dylib, c"handle_input".as_ptr().cast()) };
+        let filename = CString::new(copy.to_str().unwrap()).expect("invalid dylib string");
+        let dylib = unsafe { libc::dlopen(filename.as_ptr(), libc::RTLD_LOCAL | libc::RTLD_LAZY) };
+        if !dylib.is_null() {
+            let symbol = unsafe { libc::dlsym(dylib, c"update_and_render".as_ptr().cast()) };
             if !symbol.is_null() {
-                let handle_input: fn(PlatformInput<Memory>) =
+                let update_and_render: fn(PlatformUpdate<Memory, Pixels>) =
                     unsafe { std::mem::transmute(symbol as *const ()) };
 
-                return Some(LoadedGameFunctions {
-                    dylib,
-                    handle_input,
-                    update_and_render,
-                });
+                let symbol = unsafe { libc::dlsym(dylib, c"handle_input".as_ptr().cast()) };
+                if !symbol.is_null() {
+                    let handle_input: fn(PlatformInput<Memory>) =
+                        unsafe { std::mem::transmute(symbol as *const ()) };
+
+                    return Some(LoadedGameFunctions {
+                        dylib,
+                        handle_input,
+                        update_and_render,
+                    });
+                } else {
+                    let str = unsafe { CStr::from_ptr(libc::dlerror()) };
+                    crate::log!(
+                        "ERROR: failed to load dylib symbol `handle_input`: {}",
+                        str.to_str().unwrap()
+                    );
+                }
             } else {
                 let str = unsafe { CStr::from_ptr(libc::dlerror()) };
                 crate::log!(
-                    "ERROR: failed to load dylib symbol `handle_input`: {}",
+                    "ERROR: failed to load dylib symbol `update_and_render`: {}",
                     str.to_str().unwrap()
                 );
             }
         } else {
             let str = unsafe { CStr::from_ptr(libc::dlerror()) };
             crate::log!(
-                "ERROR: failed to load dylib symbol `update_and_render`: {}",
+                "ERROR: failed to load dylib `{path}`: {}",
                 str.to_str().unwrap()
             );
         }
-    } else {
-        let str = unsafe { CStr::from_ptr(libc::dlerror()) };
-        crate::log!(
-            "ERROR: failed to load dylib `{path}`: {}",
-            str.to_str().unwrap()
-        );
+
+        None
     }
 
-    None
+    fn run_app(
+        frame_buffer: *mut u8,
+        width: usize,
+        height: usize,
+        update: impl FnMut(PlatformRequest) + 'static,
+    ) {
+        let app = init_app(update, frame_buffer, width, height);
+        init_audio();
+        unsafe { app.finishLaunching() };
+        app.run();
+    }
+
+    fn init_app(
+        update: impl FnMut(PlatformRequest) + 'static,
+        frame_buffer: *mut u8,
+        width: usize,
+        height: usize,
+    ) -> Retained<NSApplication> {
+        unsafe {
+            WIDTH = width;
+            HEIGHT = height;
+        }
+
+        let mtm = MainThreadMarker::new().unwrap();
+        let app = NSApplication::sharedApplication(mtm);
+
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm),
+                NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    NSSize::new(width as f64, height as f64),
+                ),
+                NSWindowStyleMask::Titled
+                    | NSWindowStyleMask::Closable
+                    | NSWindowStyleMask::Miniaturizable,
+                // | NSWindowStyleMask::Resizable,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        unsafe {
+            window.setReleasedWhenClosed(false);
+        }
+
+        window.setTitle(ns_string!("glazer app"));
+        window.center();
+        window.makeKeyAndOrderFront(None);
+        window.setAcceptsMouseMovedEvents(true);
+
+        let custom_view = GameView::new(mtm, window.clone(), update, frame_buffer);
+        window.makeFirstResponder(Some(&custom_view));
+        let delegate = Delegate::new(mtm, window.clone(), &custom_view);
+        window.setContentView(Some(&*custom_view.into_super()));
+        app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        // Activate the application.
+        // Required when launching unbundled (as is done with Cargo).
+        #[expect(deprecated)]
+        app.activateIgnoringOtherApps(true);
+        app
+    }
+
+    pub fn update(view: &GameView, ivars: &GameViewIvars) {
+        let now = Instant::now();
+        let delta = {
+            let mut last_time = ivars.last_time.borrow_mut();
+            let delta = now.duration_since(*last_time).as_secs_f32();
+            *last_time = now;
+            delta
+        };
+
+        let fps = if delta > 0.0 { 1.0 / delta } else { 0.0 };
+        let title = format!("glazer app - {:.2}", fps);
+        ivars.window.setTitle(&NSString::from_str(&title));
+
+        let fb = ivars.fb;
+        let indices = AUDIO_SAMPLES_INDICES.load(Ordering::Acquire);
+        let write_index = (indices >> 32) as usize;
+        debug_assert_eq!(write_index % CHANNELS, 0);
+        let wrapped_read_index = (indices & u32::MAX as u64) as usize;
+        debug_assert_eq!(wrapped_read_index % CHANNELS, 0);
+
+        let samples_to_write = if write_index >= wrapped_read_index {
+            (wrapped_read_index + AUDIO_SAMPLES_LEN - write_index - CHANNELS) % AUDIO_SAMPLES_LEN
+        } else {
+            wrapped_read_index - write_index - CHANNELS
+        };
+
+        let mut update = ivars.update.borrow_mut();
+        unsafe {
+            update(PlatformRequest::Update(PlatformState {
+                delta,
+                //
+                frame_buffer: fb,
+                width: WIDTH,
+                height: HEIGHT,
+                //
+                samples: &mut GAME_SAMPLES[..samples_to_write],
+                channels: CHANNELS,
+                sample_rate: SAMPLE_RATE,
+            }));
+            view.setNeedsDisplay(true);
+
+            let mut index = write_index;
+            for sample in GAME_SAMPLES[..samples_to_write].iter() {
+                AUDIO_SAMPLES[index] = *sample;
+                index = (index + 1) % AUDIO_SAMPLES_LEN;
+            }
+        }
+
+        AUDIO_SAMPLES_INDICES
+            .fetch_update(Ordering::Release, Ordering::Acquire, |current_indices| {
+                let current_read_index = current_indices & u32::MAX as u64;
+                let new_write_index = ((write_index + samples_to_write) % AUDIO_SAMPLES_LEN) as u64;
+                Some((new_write_index << 32) | current_read_index)
+            })
+            .unwrap();
+    }
 }
 
-fn run_app(
-    frame_buffer: *mut u8,
+#[cfg(feature = "opengl")]
+pub fn run_opengl<Memory>(
+    memory: Memory,
     width: usize,
     height: usize,
-    update: impl FnMut(PlatformRequest) + 'static,
-) {
-    let app = init_app(update, frame_buffer, width, height);
-    init_audio();
-    unsafe { app.finishLaunching() };
-    app.run();
+    handle_input: fn(PlatformInput<Memory>),
+    update_and_render: fn(PlatformUpdateGL<Memory>),
+    shared_lib_path: Option<&str>,
+) where
+    Memory: 'static,
+{
+    if let Some(shared_lib_path) = shared_lib_path {
+        opengl::run_dynamic(memory, width, height, shared_lib_path);
+    } else {
+        opengl::run_static(memory, width, height, handle_input, update_and_render);
+    }
+}
+
+#[cfg(feature = "opengl")]
+mod opengl {
+    use super::*;
+
+    use objc2::ClassType;
+    use objc2_app_kit::{
+        NSOpenGLPFADepthSize, NSOpenGLPFADoubleBuffer, NSOpenGLPFAOpenGLProfile,
+        NSOpenGLPixelFormat, NSOpenGLProfileVersion3_2Core, NSOpenGLView,
+    };
+
+    pub fn run_static<Memory>(
+        mut memory: Memory,
+        width: usize,
+        height: usize,
+        handle_input: fn(PlatformInput<Memory>),
+        update_and_render: fn(PlatformUpdateGL<Memory>),
+    ) where
+        Memory: 'static,
+    {
+        let update = move |req: PlatformRequest| {
+            match req {
+                PlatformRequest::Update(state) => {
+                    update_and_render(PlatformUpdateGL {
+                        memory: &mut memory,
+                        delta: state.delta,
+                        //
+                        width: state.width,
+                        height: state.height,
+                        //
+                        samples: state.samples,
+                        sample_rate: state.sample_rate,
+                        channels: state.channels,
+                        //
+                        reloaded: false,
+                    })
+                }
+                PlatformRequest::Input(input) => handle_input(PlatformInput {
+                    memory: &mut memory,
+                    input,
+                }),
+            }
+        };
+        run_app(width, height, update);
+    }
+
+    pub fn run_dynamic<Memory>(
+        mut memory: Memory,
+        width: usize,
+        height: usize,
+        shared_lib_path: &str,
+    ) where
+        Memory: 'static,
+    {
+        use alloc::string::ToString;
+
+        let shared_lib_path = shared_lib_path.to_string();
+        let mut functions =
+            load_game_dylib::<Memory>(&shared_lib_path).expect("failed to load game dylib");
+        let mut loaded_instant = std::time::SystemTime::now();
+        let mut reloaded = false;
+
+        let update = move |req: PlatformRequest| {
+            if let Some(modified) = std::fs::metadata(&shared_lib_path).ok().and_then(|meta| {
+                meta.modified().ok().and_then(|modified| {
+                    modified
+                        .duration_since(loaded_instant)
+                        .is_ok_and(|dur| !dur.is_zero())
+                        .then_some(modified)
+                })
+            }) {
+                // NOTE: This does nothing, macos never closes dylibs.
+                debug_assert_eq!(unsafe { libc::dlclose(functions.dylib) }, 0);
+                functions =
+                    load_game_dylib::<Memory>(&shared_lib_path).expect("failed to load game dylib");
+                loaded_instant = modified;
+                reloaded = true;
+            }
+
+            match req {
+                PlatformRequest::Update(state) => {
+                    (functions.update_and_render)(PlatformUpdateGL {
+                        memory: &mut memory,
+                        delta: state.delta,
+                        //
+                        width: state.width,
+                        height: state.height,
+                        //
+                        samples: state.samples,
+                        sample_rate: state.sample_rate,
+                        channels: state.channels,
+                        //
+                        reloaded,
+                    });
+                    reloaded = false;
+                }
+                PlatformRequest::Input(input) => (functions.handle_input)(PlatformInput {
+                    memory: &mut memory,
+                    input,
+                }),
+            }
+        };
+        run_app(width, height, update);
+    }
+
+    struct LoadedGameFunctions<Memory> {
+        dylib: *mut c_void,
+        handle_input: fn(PlatformInput<Memory>),
+        update_and_render: fn(PlatformUpdateGL<Memory>),
+    }
+
+    fn load_game_dylib<Memory>(path: &str) -> Option<LoadedGameFunctions<Memory>> {
+        use alloc::ffi::CString;
+        use core::ffi::CStr;
+
+        crate::log!("loading game functions from `{path}`");
+
+        let mut copy = std::path::PathBuf::from(path);
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        copy.pop();
+        copy.push(format!("{}", time.as_millis()));
+        std::fs::copy(path, &copy).expect("failed to copy dylib");
+
+        let filename = CString::new(copy.to_str().unwrap()).expect("invalid dylib string");
+        let dylib = unsafe { libc::dlopen(filename.as_ptr(), libc::RTLD_LOCAL | libc::RTLD_LAZY) };
+        if !dylib.is_null() {
+            let symbol = unsafe { libc::dlsym(dylib, c"update_and_render".as_ptr().cast()) };
+            if !symbol.is_null() {
+                let update_and_render: fn(PlatformUpdateGL<Memory>) =
+                    unsafe { std::mem::transmute(symbol as *const ()) };
+
+                let symbol = unsafe { libc::dlsym(dylib, c"handle_input".as_ptr().cast()) };
+                if !symbol.is_null() {
+                    let handle_input: fn(PlatformInput<Memory>) =
+                        unsafe { std::mem::transmute(symbol as *const ()) };
+
+                    return Some(LoadedGameFunctions {
+                        dylib,
+                        handle_input,
+                        update_and_render,
+                    });
+                } else {
+                    let str = unsafe { CStr::from_ptr(libc::dlerror()) };
+                    crate::log!(
+                        "ERROR: failed to load dylib symbol `handle_input`: {}",
+                        str.to_str().unwrap()
+                    );
+                }
+            } else {
+                let str = unsafe { CStr::from_ptr(libc::dlerror()) };
+                crate::log!(
+                    "ERROR: failed to load dylib symbol `update_and_render`: {}",
+                    str.to_str().unwrap()
+                );
+            }
+        } else {
+            let str = unsafe { CStr::from_ptr(libc::dlerror()) };
+            crate::log!(
+                "ERROR: failed to load dylib `{path}`: {}",
+                str.to_str().unwrap()
+            );
+        }
+
+        None
+    }
+
+    struct GameOpenGLViewIvars {
+        update: RefCell<Box<dyn FnMut(PlatformRequest)>>,
+        last_time: RefCell<Instant>,
+        window: Retained<NSWindow>,
+    }
+
+    define_class!(
+        #[unsafe(super = NSOpenGLView)]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = GameOpenGLViewIvars]
+        struct GameOpenGLView;
+
+        unsafe impl NSObjectProtocol for GameOpenGLView {}
+
+        impl GameOpenGLView {
+            #[unsafe(method(drawRect:))]
+            fn draw_rect(&self, _rect: NSRect) {
+                opengl::update(self.ivars());
+                self.as_super().openGLContext().unwrap().flushBuffer();
+            }
+
+            #[unsafe(method(update:))]
+            fn update(&self, _timer: &NSTimer) {
+                self.setNeedsDisplay(true);
+            }
+
+            #[unsafe(method(acceptsFirstResponder))]
+            fn accepts_first_responder(&self) -> bool {
+                true
+            }
+
+            #[unsafe(method(keyDown:))]
+            fn key_down(&self, event: &NSEvent) {
+                unsafe {
+                let mut update = self.ivars().update.borrow_mut();
+                    update(PlatformRequest::Input(Input::Key {
+                        code: KEY_CODE_LUT[event.keyCode() as usize],
+                        modifiers: KeyModifiers::from(event.modifierFlags()),
+                        pressed: true,
+                        repeat: event.isARepeat(),
+                    }));
+                }
+            }
+
+            #[unsafe(method(keyUp:))]
+            fn key_up(&self, event: &NSEvent) {
+                unsafe {
+                let mut update = self.ivars().update.borrow_mut();
+                    update(PlatformRequest::Input(Input::Key {
+                        code: KEY_CODE_LUT[event.keyCode() as usize],
+                        modifiers: KeyModifiers::from(event.modifierFlags()),
+                        pressed: false,
+                        repeat: event.isARepeat(),
+                    }));
+                }
+            }
+
+            #[unsafe(method(mouseMoved:))]
+            fn mouse_moved(&self, event: &NSEvent) {
+                unsafe {
+                let mut update = self.ivars().update.borrow_mut();
+                    update(PlatformRequest::Input(Input::MouseMoved {
+                        dx: event.deltaX() as f32,
+                        dy: event.deltaY() as f32,
+                    }));
+                }
+            }
+
+            #[unsafe(method(flagsChanged:))]
+            fn flags_changed(&self, event: &NSEvent) {
+                static mut PREVIOUS_MODIFIER_FLAGS: NSEventModifierFlags = NSEventModifierFlags(0);
+
+                    let current_flags = unsafe {event.modifierFlags()};
+                    #[allow(static_mut_refs)]
+                    let changed = unsafe { current_flags.bits() ^ PREVIOUS_MODIFIER_FLAGS.bits() };
+                    unsafe { PREVIOUS_MODIFIER_FLAGS = current_flags; }
+                    let pressed = (current_flags.bits() & changed) != 0;
+                    let mut update = self.ivars().update.borrow_mut();
+
+                    if changed & NSEventModifierFlags::Shift.bits() != 0 {
+                        update(PlatformRequest::Input(Input::Key {
+                            // TODO: LeftShift vs RightShift
+                            code: KeyCode::LeftShift,
+                            modifiers: KeyModifiers::from(current_flags),
+                            pressed,
+                            repeat: false,
+                        }));
+                    }
+
+                    if changed & NSEventModifierFlags::Control.bits() != 0 {
+                        update(PlatformRequest::Input(Input::Key {
+                            // TODO: LeftAlt vs RightAlt,
+                            code: KeyCode::LeftControl,
+                            modifiers: KeyModifiers::from(current_flags),
+                            pressed,
+                            repeat: false,
+                        }));
+                    }
+
+                    if changed & NSEventModifierFlags::Option.bits() != 0 {
+                        update(PlatformRequest::Input(Input::Key {
+                            // TODO: LeftAlt vs RightAlt,
+                            code: KeyCode::LeftAlt,
+                            modifiers: KeyModifiers::from(current_flags),
+                            pressed,
+                            repeat: false,
+                        }));
+                    }
+
+                    if changed & NSEventModifierFlags::Command.bits() != 0 {
+                        // TODO: need command
+                    }
+            }
+        }
+    );
+
+    impl GameOpenGLView {
+        fn new(
+            mtm: MainThreadMarker,
+            window: Retained<NSWindow>,
+            update: impl FnMut(PlatformRequest) + 'static,
+        ) -> Retained<Self> {
+            let ivars = GameOpenGLViewIvars {
+                update: RefCell::new(Box::new(update)),
+                last_time: RefCell::new(Instant::now()),
+                window,
+            };
+            let this = Self::alloc(mtm).set_ivars(ivars);
+
+            unsafe {
+                let attrs = [
+                    NSOpenGLPFADoubleBuffer,
+                    NSOpenGLPFADepthSize,
+                    24,
+                    NSOpenGLPFAOpenGLProfile,
+                    NSOpenGLProfileVersion3_2Core,
+                    0,
+                ];
+
+                let pixel_format = NSOpenGLPixelFormat::initWithAttributes(
+                    NSOpenGLPixelFormat::alloc(),
+                    NonNull::from_ref(&attrs).cast(),
+                )
+                .unwrap();
+                let frame = NSRect::ZERO;
+
+                msg_send![super(this), initWithFrame:frame pixelFormat:&*pixel_format]
+            }
+        }
+    }
+
+    fn run_app(width: usize, height: usize, update: impl FnMut(PlatformRequest) + 'static) {
+        let app = init_app(update, width, height);
+        init_audio();
+        unsafe { app.finishLaunching() };
+        app.run();
+    }
+
+    fn init_app(
+        update: impl FnMut(PlatformRequest) + 'static,
+        width: usize,
+        height: usize,
+    ) -> Retained<NSApplication> {
+        unsafe {
+            WIDTH = width;
+            HEIGHT = height;
+        }
+
+        let mtm = MainThreadMarker::new().unwrap();
+        let app = NSApplication::sharedApplication(mtm);
+
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm),
+                NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    NSSize::new(width as f64, height as f64),
+                ),
+                NSWindowStyleMask::Titled
+                    | NSWindowStyleMask::Closable
+                    | NSWindowStyleMask::Miniaturizable,
+                // | NSWindowStyleMask::Resizable,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        unsafe {
+            window.setReleasedWhenClosed(false);
+        }
+
+        window.setTitle(ns_string!("glazer app"));
+        window.center();
+        window.makeKeyAndOrderFront(None);
+        window.setAcceptsMouseMovedEvents(true);
+
+        let custom_view = GameOpenGLView::new(mtm, window.clone(), update);
+        gl::load_with(|symbol| {
+            use std::ffi::c_void;
+            let symbol_cstr = std::ffi::CString::new(symbol).unwrap();
+            unsafe {
+                let framework = c"/System/Library/Frameworks/OpenGL.framework/OpenGL".as_ptr();
+                let handle = libc::dlopen(framework, libc::RTLD_LAZY);
+                if handle.is_null() {
+                    return std::ptr::null();
+                }
+                libc::dlsym(handle, symbol_cstr.as_ptr()) as *const c_void
+            }
+        });
+
+        window.makeFirstResponder(Some(&custom_view));
+        let delegate = Delegate::new(mtm, window.clone(), &custom_view);
+        window.setContentView(Some(&*custom_view.into_super()));
+        app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        // Activate the application.
+        // Required when launching unbundled (as is done with Cargo).
+        #[expect(deprecated)]
+        app.activateIgnoringOtherApps(true);
+        app
+    }
+
+    fn update(ivars: &GameOpenGLViewIvars) {
+        let now = Instant::now();
+        let delta = {
+            let mut last_time = ivars.last_time.borrow_mut();
+            let delta = now.duration_since(*last_time).as_secs_f32();
+            *last_time = now;
+            delta
+        };
+
+        let fps = if delta > 0.0 { 1.0 / delta } else { 0.0 };
+        let title = format!("glazer app - {:.2}", fps);
+        ivars.window.setTitle(&NSString::from_str(&title));
+
+        let indices = AUDIO_SAMPLES_INDICES.load(Ordering::Acquire);
+        let write_index = (indices >> 32) as usize;
+        debug_assert_eq!(write_index % CHANNELS, 0);
+        let wrapped_read_index = (indices & u32::MAX as u64) as usize;
+        debug_assert_eq!(wrapped_read_index % CHANNELS, 0);
+
+        let samples_to_write = if write_index >= wrapped_read_index {
+            (wrapped_read_index + AUDIO_SAMPLES_LEN - write_index - CHANNELS) % AUDIO_SAMPLES_LEN
+        } else {
+            wrapped_read_index - write_index - CHANNELS
+        };
+
+        let mut update = ivars.update.borrow_mut();
+        unsafe {
+            update(PlatformRequest::Update(PlatformState {
+                delta,
+                //
+                frame_buffer: core::ptr::null_mut(),
+                width: WIDTH,
+                height: HEIGHT,
+                //
+                samples: &mut GAME_SAMPLES[..samples_to_write],
+                channels: CHANNELS,
+                sample_rate: SAMPLE_RATE,
+            }));
+
+            let mut index = write_index;
+            for sample in GAME_SAMPLES[..samples_to_write].iter() {
+                AUDIO_SAMPLES[index] = *sample;
+                index = (index + 1) % AUDIO_SAMPLES_LEN;
+            }
+        }
+
+        AUDIO_SAMPLES_INDICES
+            .fetch_update(Ordering::Release, Ordering::Acquire, |current_indices| {
+                let current_read_index = current_indices & u32::MAX as u64;
+                let new_write_index = ((write_index + samples_to_write) % AUDIO_SAMPLES_LEN) as u64;
+                Some((new_write_index << 32) | current_read_index)
+            })
+            .unwrap();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -308,17 +894,15 @@ define_class!(
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _notification: &NSNotification) {
             // Quit the application when the window is closed.
-            unsafe {NSApplication::sharedApplication(self.mtm()).terminate(None);}
+            unsafe {
+                NSApplication::sharedApplication(self.mtm()).terminate(None);
+            }
         }
     }
 );
 
 impl Delegate {
-    fn new(
-        mtm: MainThreadMarker,
-        window: Retained<NSWindow>,
-        view: &Retained<GameView>,
-    ) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, window: Retained<NSWindow>, view: &AnyObject) -> Retained<Self> {
         let _timer = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 0.0,
@@ -382,7 +966,7 @@ define_class!(
 
         #[unsafe(method(update:))]
         fn update(&self, _timer: &NSTimer) {
-            update(self, self.ivars());
+            software_renderer::update(self, self.ivars());
         }
 
         #[unsafe(method(acceptsFirstResponder))]
@@ -494,7 +1078,7 @@ impl GameView {
 }
 
 static mut AUDIO_UNIT: AudioComponentInstance = null_mut();
-const SAMPLE_RATE: f32 = 44_100.0;
+const SAMPLE_RATE: u32 = 44_100;
 const CHANNELS: usize = 2;
 
 fn start_audio() {
@@ -566,116 +1150,8 @@ fn init_audio() {
     }
 }
 
-fn init_app(
-    update: impl FnMut(PlatformRequest) + 'static,
-    frame_buffer: *mut u8,
-    width: usize,
-    height: usize,
-) -> Retained<NSApplication> {
-    unsafe {
-        WIDTH = width;
-        HEIGHT = height;
-    }
-
-    let mtm = MainThreadMarker::new().unwrap();
-    let app = NSApplication::sharedApplication(mtm);
-
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(mtm),
-            NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(width as f64, height as f64),
-            ),
-            NSWindowStyleMask::Titled
-                | NSWindowStyleMask::Closable
-                | NSWindowStyleMask::Miniaturizable,
-            // | NSWindowStyleMask::Resizable,
-            NSBackingStoreType::Buffered,
-            false,
-        )
-    };
-    unsafe {
-        window.setReleasedWhenClosed(false);
-    }
-
-    window.setTitle(ns_string!("glazer app"));
-    window.center();
-    window.makeKeyAndOrderFront(None);
-    window.setAcceptsMouseMovedEvents(true);
-
-    let custom_view = GameView::new(mtm, window.clone(), update, frame_buffer);
-    window.makeFirstResponder(Some(&custom_view));
-    let delegate = Delegate::new(mtm, window.clone(), &custom_view);
-    window.setContentView(Some(&*custom_view.into_super()));
-    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    // Activate the application.
-    // Required when launching unbundled (as is done with Cargo).
-    #[expect(deprecated)]
-    app.activateIgnoringOtherApps(true);
-    app
-}
-
 static mut WIDTH: usize = 0;
 static mut HEIGHT: usize = 0;
-
-fn update(view: &GameView, ivars: &GameViewIvars) {
-    let now = Instant::now();
-    let delta = {
-        let mut last_time = ivars.last_time.borrow_mut();
-        let delta = now.duration_since(*last_time).as_secs_f32();
-        *last_time = now;
-        delta
-    };
-
-    let fps = if delta > 0.0 { 1.0 / delta } else { 0.0 };
-    let title = format!("glazer app - {:.2}", fps);
-    ivars.window.setTitle(&NSString::from_str(&title));
-
-    let fb = ivars.fb;
-    let indices = AUDIO_SAMPLES_INDICES.load(Ordering::Acquire);
-    let write_index = (indices >> 32) as usize;
-    debug_assert_eq!(write_index % CHANNELS, 0);
-    let wrapped_read_index = (indices & u32::MAX as u64) as usize;
-    debug_assert_eq!(wrapped_read_index % CHANNELS, 0);
-
-    let samples_to_write = if write_index >= wrapped_read_index {
-        (wrapped_read_index + AUDIO_SAMPLES_LEN - write_index - CHANNELS) % AUDIO_SAMPLES_LEN
-    } else {
-        wrapped_read_index - write_index - CHANNELS
-    };
-
-    let mut update = ivars.update.borrow_mut();
-    unsafe {
-        update(PlatformRequest::Update(PlatformState {
-            delta,
-            //
-            frame_buffer: fb,
-            width: WIDTH,
-            height: HEIGHT,
-            //
-            samples: &mut GAME_SAMPLES[..samples_to_write],
-            channels: CHANNELS,
-            sample_rate: SAMPLE_RATE,
-        }));
-        view.setNeedsDisplay(true);
-
-        let mut index = write_index;
-        for sample in GAME_SAMPLES[..samples_to_write].iter() {
-            AUDIO_SAMPLES[index] = *sample;
-            index = (index + 1) % AUDIO_SAMPLES_LEN;
-        }
-    }
-
-    AUDIO_SAMPLES_INDICES
-        .fetch_update(Ordering::Release, Ordering::Acquire, |current_indices| {
-            let current_read_index = current_indices & u32::MAX as u64;
-            let new_write_index = ((write_index + samples_to_write) % AUDIO_SAMPLES_LEN) as u64;
-            Some((new_write_index << 32) | current_read_index)
-        })
-        .unwrap();
-}
 
 const AUDIO_SAMPLES_LEN: usize = 1024 * 4;
 static mut AUDIO_SAMPLES: [f32; AUDIO_SAMPLES_LEN] = [0.0; AUDIO_SAMPLES_LEN];

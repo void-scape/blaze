@@ -1,6 +1,9 @@
 #![no_std]
 extern crate alloc;
 
+#[cfg(feature = "opengl")]
+pub extern crate gl;
+
 #[cfg(all(target_os = "macos", not(feature = "generic")))]
 mod appkit;
 #[cfg(all(target_os = "macos", not(feature = "generic")))]
@@ -11,9 +14,9 @@ mod generic;
 #[cfg(feature = "generic")]
 use generic as platform;
 
-#[cfg(not(feature = "generic"))]
+#[cfg(all(not(target_os = "macos"), not(feature = "generic")))]
 mod unsupported;
-#[cfg(not(feature = "generic"))]
+#[cfg(all(not(target_os = "macos"), not(feature = "generic")))]
 use unsupported as platform;
 
 #[macro_export]
@@ -58,7 +61,6 @@ pub fn run<Memory, Pixels>(
     );
 }
 
-#[repr(C)]
 #[derive(Debug)]
 pub struct PlatformUpdate<'a, T, Pixels> {
     // logic
@@ -67,6 +69,47 @@ pub struct PlatformUpdate<'a, T, Pixels> {
 
     // graphics
     pub frame_buffer: &'a mut [Pixels],
+    pub width: usize,
+    pub height: usize,
+
+    // audio
+    pub samples: &'a mut [f32],
+    pub sample_rate: u32,
+    pub channels: usize,
+
+    // debug
+    pub reloaded: bool,
+}
+
+#[cfg(feature = "opengl")]
+pub fn run_opengl<Memory>(
+    memory: Memory,
+    width: usize,
+    height: usize,
+    handle_input: fn(PlatformInput<Memory>),
+    update_and_render: fn(PlatformUpdateGL<Memory>),
+    shared_lib_path: Option<&str>,
+) where
+    Memory: 'static + Send,
+{
+    platform::run_opengl(
+        memory,
+        width,
+        height,
+        handle_input,
+        update_and_render,
+        shared_lib_path,
+    );
+}
+
+#[cfg(feature = "opengl")]
+#[derive(Debug)]
+pub struct PlatformUpdateGL<'a, T> {
+    // logic
+    pub memory: &'a mut T,
+    pub delta: f32,
+
+    // graphics
     pub width: usize,
     pub height: usize,
 

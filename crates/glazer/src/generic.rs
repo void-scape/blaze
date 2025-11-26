@@ -81,6 +81,20 @@ pub fn run<Memory, Pixels>(
         .unwrap();
 }
 
+#[cfg(feature = "opengl")]
+pub fn run_opengl<Memory>(
+    memory: Memory,
+    width: usize,
+    height: usize,
+    handle_input: fn(crate::PlatformInput<Memory>),
+    update_and_render: fn(crate::PlatformUpdateGL<Memory>),
+    shared_lib_path: Option<&str>,
+) where
+    Memory: 'static,
+{
+    panic!("opengl not supported on this platform");
+}
+
 type SampleBuffer = Arc<Mutex<VecDeque<f32>>>;
 
 struct App<Memory, Pixels> {

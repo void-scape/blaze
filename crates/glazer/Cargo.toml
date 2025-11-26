@@ -4,11 +4,56 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["generic"]
+default = ["generic", "gl"]
 generic = ["libc", "winit", "softbuffer", "cpal"]
+opengl = ["gl"]
 
 [dependencies]
 libc = { version = "0.2.176", optional = true }
 winit = { version = "0.30.12", optional = true }
 softbuffer = { version = "0.4.6", optional = true }
 cpal = { version = "0.15", optional = true }
+gl = { version = "0.14.0", optional = true }
+
+[target.'cfg(all(target_os = "macos", not(feature = "generic")))'.dependencies]
+libc = "0.2.176"
+objc2-foundation = { version = "0.3.1", default-features = false, features = [
+	"std",
+	"alloc",
+	"NSTimer",
+] }
+objc2 = { version = "0.6.2", default-features = false, features = [
+	"std",
+	"alloc",
+] }
+objc2-app-kit = { version = "0.3.1", default-features = false, features = [
+	"std",
+	"alloc",
+	"objc2-core-foundation",
+	"NSApplication",
+	"NSResponder",
+	"NSRunningApplication",
+	"NSGraphics",
+	"NSBitmapImageRep",
+	"NSImageRep",
+	"NSImage",
+	"NSView",
+	"NSWindow",
+	"NSEvent",
+	"NSOpenGLView",
+	"NSOpenGL",
+	"objc2-open-gl",
+] }
+objc2-audio-toolbox = { version = "0.3.1", default-features = false, features = [
+	"AUComponent",
+	"AudioComponent",
+	"AudioOutputUnit",
+	"AudioUnitProperties",
+	"objc2-core-audio-types",
+] }
+objc2-core-audio-types = { version = "0.3.1", default-features = false, features = [
+	"CoreAudioBaseTypes",
+] }
+objc2-core-foundation = { version = "0.3.1", default-features = false, features = [
+	"CFCGTypes",
+] }
