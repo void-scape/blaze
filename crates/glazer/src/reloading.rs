@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 #[cfg(feature = "hot-reload")]
 extern crate std;
 
