@@ -40,6 +40,7 @@ use objc2_foundation::{
 
 #[cfg(feature = "opengl")]
 use crate::PlatformUpdateGL;
+use crate::reloading::FnPtrs;
 use crate::{Input, KeyCode, KeyModifiers, PlatformInput, PlatformUpdate};
 
 enum PlatformRequest<'a> {
@@ -71,30 +72,24 @@ pub fn run<Memory, Pixels>(
     Pixels: 'static,
     Memory: 'static,
 {
-    if let Some(shared_lib_path) = shared_lib_path {
-        software_renderer::run_dynamic(memory, frame_buffer, width, height, shared_lib_path);
-    } else {
-        software_renderer::run_static(
-            memory,
-            frame_buffer,
-            width,
-            height,
-            handle_input,
-            update_and_render,
-        );
-    }
+    software_renderer::run(
+        memory,
+        frame_buffer,
+        width,
+        height,
+        FnPtrs::new(handle_input, update_and_render, shared_lib_path),
+    );
 }
 
 mod software_renderer {
     use super::*;
 
-    pub fn run_static<Memory, Pixels>(
+    pub fn run<Memory, Pixels>(
         mut memory: Memory,
         frame_buffer: &mut [Pixels],
         width: usize,
         height: usize,
-        handle_input: fn(PlatformInput<Memory>),
-        update_and_render: fn(PlatformUpdate<Memory, Pixels>),
+        mut fns: FnPtrs,
     ) where
         Pixels: 'static,
         Memory: 'static,
@@ -103,82 +98,16 @@ mod software_renderer {
         let update = move |req: PlatformRequest| {
             match req {
                 PlatformRequest::Update(state) => {
+                    let reloaded = fns.reload();
+
                     debug_assert!(pixels_len >= state.width * state.height);
-                    update_and_render(PlatformUpdate {
+                    fns.update_and_render(PlatformUpdate {
                         memory: &mut memory,
                         delta: state.delta,
                         //
                         frame_buffer: unsafe {
                             core::slice::from_raw_parts_mut(
-                                state.frame_buffer as *mut _,
-                                state.width * state.height,
-                            )
-                        },
-                        width: state.width,
-                        height: state.height,
-                        //
-                        samples: state.samples,
-                        sample_rate: state.sample_rate,
-                        channels: state.channels,
-                        //
-                        reloaded: false,
-                    })
-                }
-                PlatformRequest::Input(input) => handle_input(PlatformInput {
-                    memory: &mut memory,
-                    input,
-                }),
-            }
-        };
-        run_app(frame_buffer.as_mut_ptr() as *mut u8, width, height, update);
-    }
-
-    pub fn run_dynamic<Memory, Pixels>(
-        mut memory: Memory,
-        frame_buffer: &mut [Pixels],
-        width: usize,
-        height: usize,
-        shared_lib_path: &str,
-    ) where
-        Pixels: 'static,
-        Memory: 'static,
-    {
-        use alloc::string::ToString;
-
-        let shared_lib_path = shared_lib_path.to_string();
-        let mut functions =
-            load_game_dylib::<Memory, Pixels>(&shared_lib_path).expect("failed to load game dylib");
-        let mut loaded_instant = std::time::SystemTime::now();
-        let mut reloaded = false;
-
-        let pixels_len = frame_buffer.len();
-        let update = move |req: PlatformRequest| {
-            if let Some(modified) = std::fs::metadata(&shared_lib_path).ok().and_then(|meta| {
-                meta.modified().ok().and_then(|modified| {
-                    modified
-                        .duration_since(loaded_instant)
-                        .is_ok_and(|dur| !dur.is_zero())
-                        .then_some(modified)
-                })
-            }) {
-                // NOTE: This does nothing, macos never closes dylibs.
-                debug_assert_eq!(unsafe { libc::dlclose(functions.dylib) }, 0);
-                functions = load_game_dylib::<Memory, Pixels>(&shared_lib_path)
-                    .expect("failed to load game dylib");
-                loaded_instant = modified;
-                reloaded = true;
-            }
-
-            match req {
-                PlatformRequest::Update(state) => {
-                    debug_assert!(pixels_len >= state.width * state.height);
-                    (functions.update_and_render)(PlatformUpdate {
-                        memory: &mut memory,
-                        delta: state.delta,
-                        //
-                        frame_buffer: unsafe {
-                            core::slice::from_raw_parts_mut(
-                                state.frame_buffer as *mut _,
+                                state.frame_buffer as *mut Pixels,
                                 state.width * state.height,
                             )
                         },
@@ -191,78 +120,14 @@ mod software_renderer {
                         //
                         reloaded,
                     });
-                    reloaded = false;
                 }
-                PlatformRequest::Input(input) => (functions.handle_input)(PlatformInput {
+                PlatformRequest::Input(input) => fns.handle_input(PlatformInput {
                     memory: &mut memory,
                     input,
                 }),
             }
         };
         run_app(frame_buffer.as_mut_ptr() as *mut u8, width, height, update);
-    }
-
-    struct LoadedGameFunctions<Memory, Pixels> {
-        dylib: *mut c_void,
-        handle_input: fn(PlatformInput<Memory>),
-        update_and_render: fn(PlatformUpdate<Memory, Pixels>),
-    }
-
-    fn load_game_dylib<Memory, Pixels>(path: &str) -> Option<LoadedGameFunctions<Memory, Pixels>> {
-        use alloc::ffi::CString;
-        use core::ffi::CStr;
-
-        crate::log!("loading game functions from `{path}`");
-
-        let mut copy = std::path::PathBuf::from(path);
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
-        copy.pop();
-        copy.push(format!("{}", time.as_millis()));
-        std::fs::copy(path, &copy).expect("failed to copy dylib");
-
-        let filename = CString::new(copy.to_str().unwrap()).expect("invalid dylib string");
-        let dylib = unsafe { libc::dlopen(filename.as_ptr(), libc::RTLD_LOCAL | libc::RTLD_LAZY) };
-        if !dylib.is_null() {
-            let symbol = unsafe { libc::dlsym(dylib, c"update_and_render".as_ptr().cast()) };
-            if !symbol.is_null() {
-                let update_and_render: fn(PlatformUpdate<Memory, Pixels>) =
-                    unsafe { std::mem::transmute(symbol as *const ()) };
-
-                let symbol = unsafe { libc::dlsym(dylib, c"handle_input".as_ptr().cast()) };
-                if !symbol.is_null() {
-                    let handle_input: fn(PlatformInput<Memory>) =
-                        unsafe { std::mem::transmute(symbol as *const ()) };
-
-                    return Some(LoadedGameFunctions {
-                        dylib,
-                        handle_input,
-                        update_and_render,
-                    });
-                } else {
-                    let str = unsafe { CStr::from_ptr(libc::dlerror()) };
-                    crate::log!(
-                        "ERROR: failed to load dylib symbol `handle_input`: {}",
-                        str.to_str().unwrap()
-                    );
-                }
-            } else {
-                let str = unsafe { CStr::from_ptr(libc::dlerror()) };
-                crate::log!(
-                    "ERROR: failed to load dylib symbol `update_and_render`: {}",
-                    str.to_str().unwrap()
-                );
-            }
-        } else {
-            let str = unsafe { CStr::from_ptr(libc::dlerror()) };
-            crate::log!(
-                "ERROR: failed to load dylib `{path}`: {}",
-                str.to_str().unwrap()
-            );
-        }
-
-        None
     }
 
     fn run_app(
@@ -393,15 +258,22 @@ pub fn run_opengl<Memory>(
     height: usize,
     handle_input: fn(PlatformInput<Memory>),
     update_and_render: fn(PlatformUpdateGL<Memory>),
+    initialize_opengl: fn(&dyn Fn(&'static str) -> *const core::ffi::c_void),
     shared_lib_path: Option<&str>,
 ) where
     Memory: 'static,
 {
-    if let Some(shared_lib_path) = shared_lib_path {
-        opengl::run_dynamic(memory, width, height, shared_lib_path);
-    } else {
-        opengl::run_static(memory, width, height, handle_input, update_and_render);
-    }
+    opengl::run(
+        memory,
+        width,
+        height,
+        FnPtrs::new_opengl(
+            handle_input,
+            update_and_render,
+            initialize_opengl,
+            shared_lib_path,
+        ),
+    );
 }
 
 #[cfg(feature = "opengl")]
@@ -414,77 +286,18 @@ mod opengl {
         NSOpenGLPixelFormat, NSOpenGLProfileVersion3_2Core, NSOpenGLView,
     };
 
-    pub fn run_static<Memory>(
-        mut memory: Memory,
-        width: usize,
-        height: usize,
-        handle_input: fn(PlatformInput<Memory>),
-        update_and_render: fn(PlatformUpdateGL<Memory>),
-    ) where
+    pub fn run<Memory>(mut memory: Memory, width: usize, height: usize, mut fns: FnPtrs)
+    where
         Memory: 'static,
     {
         let update = move |req: PlatformRequest| {
             match req {
                 PlatformRequest::Update(state) => {
-                    update_and_render(PlatformUpdateGL {
-                        memory: &mut memory,
-                        delta: state.delta,
-                        //
-                        width: state.width,
-                        height: state.height,
-                        //
-                        samples: state.samples,
-                        sample_rate: state.sample_rate,
-                        channels: state.channels,
-                        //
-                        reloaded: false,
-                    })
-                }
-                PlatformRequest::Input(input) => handle_input(PlatformInput {
-                    memory: &mut memory,
-                    input,
-                }),
-            }
-        };
-        run_app(width, height, update);
-    }
-
-    pub fn run_dynamic<Memory>(
-        mut memory: Memory,
-        width: usize,
-        height: usize,
-        shared_lib_path: &str,
-    ) where
-        Memory: 'static,
-    {
-        use alloc::string::ToString;
-
-        let shared_lib_path = shared_lib_path.to_string();
-        let mut functions =
-            load_game_dylib::<Memory>(&shared_lib_path).expect("failed to load game dylib");
-        let mut loaded_instant = std::time::SystemTime::now();
-        let mut reloaded = false;
-
-        let update = move |req: PlatformRequest| {
-            if let Some(modified) = std::fs::metadata(&shared_lib_path).ok().and_then(|meta| {
-                meta.modified().ok().and_then(|modified| {
-                    modified
-                        .duration_since(loaded_instant)
-                        .is_ok_and(|dur| !dur.is_zero())
-                        .then_some(modified)
-                })
-            }) {
-                // NOTE: This does nothing, macos never closes dylibs.
-                debug_assert_eq!(unsafe { libc::dlclose(functions.dylib) }, 0);
-                functions =
-                    load_game_dylib::<Memory>(&shared_lib_path).expect("failed to load game dylib");
-                loaded_instant = modified;
-                reloaded = true;
-            }
-
-            match req {
-                PlatformRequest::Update(state) => {
-                    (functions.update_and_render)(PlatformUpdateGL {
+                    let reloaded = fns.reload();
+                    if reloaded {
+                        fns.initialize_opengl(&gl_loader);
+                    }
+                    fns.update_and_render(PlatformUpdateGL {
                         memory: &mut memory,
                         delta: state.delta,
                         //
@@ -496,79 +309,15 @@ mod opengl {
                         channels: state.channels,
                         //
                         reloaded,
-                    });
-                    reloaded = false;
+                    })
                 }
-                PlatformRequest::Input(input) => (functions.handle_input)(PlatformInput {
+                PlatformRequest::Input(input) => fns.handle_input(PlatformInput {
                     memory: &mut memory,
                     input,
                 }),
             }
         };
         run_app(width, height, update);
-    }
-
-    struct LoadedGameFunctions<Memory> {
-        dylib: *mut c_void,
-        handle_input: fn(PlatformInput<Memory>),
-        update_and_render: fn(PlatformUpdateGL<Memory>),
-    }
-
-    fn load_game_dylib<Memory>(path: &str) -> Option<LoadedGameFunctions<Memory>> {
-        use alloc::ffi::CString;
-        use core::ffi::CStr;
-
-        crate::log!("loading game functions from `{path}`");
-
-        let mut copy = std::path::PathBuf::from(path);
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
-        copy.pop();
-        copy.push(format!("{}", time.as_millis()));
-        std::fs::copy(path, &copy).expect("failed to copy dylib");
-
-        let filename = CString::new(copy.to_str().unwrap()).expect("invalid dylib string");
-        let dylib = unsafe { libc::dlopen(filename.as_ptr(), libc::RTLD_LOCAL | libc::RTLD_LAZY) };
-        if !dylib.is_null() {
-            let symbol = unsafe { libc::dlsym(dylib, c"update_and_render".as_ptr().cast()) };
-            if !symbol.is_null() {
-                let update_and_render: fn(PlatformUpdateGL<Memory>) =
-                    unsafe { std::mem::transmute(symbol as *const ()) };
-
-                let symbol = unsafe { libc::dlsym(dylib, c"handle_input".as_ptr().cast()) };
-                if !symbol.is_null() {
-                    let handle_input: fn(PlatformInput<Memory>) =
-                        unsafe { std::mem::transmute(symbol as *const ()) };
-
-                    return Some(LoadedGameFunctions {
-                        dylib,
-                        handle_input,
-                        update_and_render,
-                    });
-                } else {
-                    let str = unsafe { CStr::from_ptr(libc::dlerror()) };
-                    crate::log!(
-                        "ERROR: failed to load dylib symbol `handle_input`: {}",
-                        str.to_str().unwrap()
-                    );
-                }
-            } else {
-                let str = unsafe { CStr::from_ptr(libc::dlerror()) };
-                crate::log!(
-                    "ERROR: failed to load dylib symbol `update_and_render`: {}",
-                    str.to_str().unwrap()
-                );
-            }
-        } else {
-            let str = unsafe { CStr::from_ptr(libc::dlerror()) };
-            crate::log!(
-                "ERROR: failed to load dylib `{path}`: {}",
-                str.to_str().unwrap()
-            );
-        }
-
-        None
     }
 
     struct GameOpenGLViewIvars {
@@ -767,18 +516,7 @@ mod opengl {
         window.setAcceptsMouseMovedEvents(true);
 
         let custom_view = GameOpenGLView::new(mtm, window.clone(), update);
-        gl::load_with(|symbol| {
-            use std::ffi::c_void;
-            let symbol_cstr = std::ffi::CString::new(symbol).unwrap();
-            unsafe {
-                let framework = c"/System/Library/Frameworks/OpenGL.framework/OpenGL".as_ptr();
-                let handle = libc::dlopen(framework, libc::RTLD_LAZY);
-                if handle.is_null() {
-                    return std::ptr::null();
-                }
-                libc::dlsym(handle, symbol_cstr.as_ptr()) as *const c_void
-            }
-        });
+        gl::load_with(gl_loader);
 
         window.makeFirstResponder(Some(&custom_view));
         let delegate = Delegate::new(mtm, window.clone(), &custom_view);
@@ -845,6 +583,19 @@ mod opengl {
                 Some((new_write_index << 32) | current_read_index)
             })
             .unwrap();
+    }
+
+    fn gl_loader(symbol: &'static str) -> *const std::ffi::c_void {
+        use std::ffi::c_void;
+        let symbol_cstr = std::ffi::CString::new(symbol).unwrap();
+        unsafe {
+            let framework = c"/System/Library/Frameworks/OpenGL.framework/OpenGL".as_ptr();
+            let handle = libc::dlopen(framework, libc::RTLD_LAZY);
+            if handle.is_null() {
+                return std::ptr::null();
+            }
+            libc::dlsym(handle, symbol_cstr.as_ptr()) as *const c_void
+        }
     }
 }
 

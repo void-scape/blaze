@@ -15,12 +15,12 @@ pub fn run<Memory, Pixels>(
 
 #[cfg(feature = "opengl")]
 pub fn run_opengl<Memory>(
-    memory: Memory,
-    width: usize,
-    height: usize,
-    handle_input: fn(crate::PlatformInput<Memory>),
-    update_and_render: fn(crate::PlatformUpdateGL<Memory>),
-    shared_lib_path: Option<&str>,
+    _: Memory,
+    _: usize,
+    _: usize,
+    _: fn(crate::PlatformInput<Memory>),
+    _: fn(crate::PlatformUpdateGL<Memory>),
+    _: Option<&str>,
 ) where
     Memory: 'static,
 {

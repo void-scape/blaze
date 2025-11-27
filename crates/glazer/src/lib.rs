@@ -4,6 +4,8 @@ extern crate alloc;
 #[cfg(feature = "opengl")]
 pub extern crate gl;
 
+mod reloading;
+
 #[cfg(all(target_os = "macos", not(feature = "generic")))]
 mod appkit;
 #[cfg(all(target_os = "macos", not(feature = "generic")))]
@@ -82,12 +84,14 @@ pub struct PlatformUpdate<'a, T, Pixels> {
 }
 
 #[cfg(feature = "opengl")]
+#[cfg_attr(feature = "generic", cfg(feature = "glutin"))]
 pub fn run_opengl<Memory>(
     memory: Memory,
     width: usize,
     height: usize,
     handle_input: fn(PlatformInput<Memory>),
     update_and_render: fn(PlatformUpdateGL<Memory>),
+    initialize_opengl: fn(&dyn Fn(&'static str) -> *const core::ffi::c_void),
     shared_lib_path: Option<&str>,
 ) where
     Memory: 'static + Send,
@@ -98,11 +102,13 @@ pub fn run_opengl<Memory>(
         height,
         handle_input,
         update_and_render,
+        initialize_opengl,
         shared_lib_path,
     );
 }
 
 #[cfg(feature = "opengl")]
+#[cfg_attr(feature = "generic", cfg(feature = "glutin"))]
 #[derive(Debug)]
 pub struct PlatformUpdateGL<'a, T> {
     // logic
@@ -277,4 +283,32 @@ macro_rules! log {
 #[doc(hidden)]
 pub fn __log(str: &str) {
     platform::log(str);
+}
+
+/// Automatically generate a path to the crate's dynamic library in `target/debug`.
+///
+/// Returns `None` if `debug_assertions` are disabled.
+pub fn debug_target() -> Option<&'static str> {
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        extern crate std;
+        extern crate alloc;
+
+        #[cfg(target_os = "linux")]
+        let extension = "so";
+        #[cfg(target_os = "macos")]
+        let extension = "dylib";
+
+        let name = env!("CARGO_CRATE_NAME");
+        let path = alloc::format!("target/debug/lib{}.{}", name, extension);
+        match std::fs::exists(&path) {
+            Ok(_) => Some(std::string::String::leak(path)),
+            Err(err) => panic!("failed to load {path}: {err}"),
+        }
+    }
 }
