@@ -3,61 +3,29 @@ name = "glazer"
 version = "0.1.0"
 edition = "2024"
 
-# TODO: This is a mess, opengl needs a way to be added without this spaghetti.
 [features]
-default = ["generic", "opengl", "glutin", "hot-reload"]
-generic = ["libc", "winit", "softbuffer", "cpal"]
-glutin = ["dep:glutin", "dep:glutin-winit", "opengl"]
-opengl = ["gl", "libc"]
+default = ["opengl", "hot-reload"]
+software = ["softbuffer"]
+opengl = ["gl", "glutin", "glutin-winit"]
 hot-reload = ["libc"]
 
 [dependencies]
+cpal = { version = "0.15" }
 libc = { version = "0.2", optional = true }
-winit = { version = "0.30", optional = true }
-softbuffer = { version = "0.4", optional = true }
-cpal = { version = "0.15", optional = true }
 gl = { version = "0.14", optional = true }
-glutin = { version = "0.32", optional = true }
-glutin-winit = { version = "0.5", optional = true }
 
-[target.'cfg(all(target_os = "macos", not(feature = "generic")))'.dependencies]
-objc2-foundation = { version = "0.3", default-features = false, features = [
-	"std",
-	"alloc",
-	"NSTimer",
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", default-features = false, features = [
+	"rwh_06",
+	"x11",
 ] }
-objc2 = { version = "0.6", default-features = false, features = [
-	"std",
-	"alloc",
+softbuffer = { version = "0.4", optional = true, default-features = false, features = [
+	"x11",
+	"x11-dlopen",
 ] }
-objc2-app-kit = { version = "0.3", default-features = false, features = [
-	"std",
-	"alloc",
-	"objc2-core-foundation",
-	"NSApplication",
-	"NSResponder",
-	"NSRunningApplication",
-	"NSGraphics",
-	"NSBitmapImageRep",
-	"NSImageRep",
-	"NSImage",
-	"NSView",
-	"NSWindow",
-	"NSEvent",
-	"NSOpenGLView",
-	"NSOpenGL",
-	"objc2-open-gl",
+glutin = { version = "0.32", optional = true, default-features = false, features = [
+	"egl",
 ] }
-objc2-audio-toolbox = { version = "0.3", default-features = false, features = [
-	"AUComponent",
-	"AudioComponent",
-	"AudioOutputUnit",
-	"AudioUnitProperties",
-	"objc2-core-audio-types",
-] }
-objc2-core-audio-types = { version = "0.3", default-features = false, features = [
-	"CoreAudioBaseTypes",
-] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = [
-	"CFCGTypes",
+glutin-winit = { version = "0.5", optional = true, default-features = false, features = [
+	"egl",
 ] }
