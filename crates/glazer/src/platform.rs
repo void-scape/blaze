@@ -35,16 +35,19 @@ mod software {
 
     use crate::callback::FnPtrs;
     use alloc::collections::vec_deque::VecDeque;
+    use alloc::rc::Rc;
     use alloc::sync::Arc;
     use core::marker::PhantomData;
     use core::num::NonZeroU32;
+    use cpal::Stream;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use softbuffer::Context;
+    #[cfg(not(target_arch = "wasm32"))]
     use std::time::SystemTime;
     use winit::application::ApplicationHandler;
     use winit::dpi::PhysicalSize;
     use winit::event::WindowEvent;
-    use winit::event_loop::{ActiveEventLoop, EventLoop};
+    use winit::event_loop::{ActiveEventLoop, EventLoop, OwnedDisplayHandle};
     use winit::window::{Window, WindowAttributes, WindowId};
 
     pub fn run<Memory, Pixels>(
@@ -89,35 +92,48 @@ mod software {
                         }
                     }
                 },
-                |err| std::eprintln!("audio thread error: {}", err),
+                |err| std::println!("[ERROR] audio thread: {}", err),
                 None,
             )
             .unwrap();
 
+        #[cfg(not(target_arch = "wasm32"))]
         stream.play().unwrap();
 
         let event_loop = EventLoop::new().unwrap();
         let frame_buffer = frame_buffer.as_mut_ptr().cast();
-        event_loop
-            .run_app(&mut App {
-                window: None,
-                gfx: None,
-                width,
-                height,
-                mem,
-                frame_buffer,
-                fns: FnPtrs::new(handle_input, update_and_render, reload),
-                sample_buffer,
-                sample_rate,
-                channels,
-                now: SystemTime::now(),
-                _pixels: PhantomData::<Pixels>,
-            })
-            .unwrap();
+
+        #[allow(unused_mut)]
+        let mut app = App {
+            window: None,
+            stream,
+            gfx: None,
+            width,
+            height,
+            mem,
+            frame_buffer,
+            fns: FnPtrs::new(handle_input, update_and_render, reload),
+            sample_buffer,
+            sample_rate,
+            channels,
+            #[cfg(not(target_arch = "wasm32"))]
+            now: SystemTime::now(),
+            _pixels: PhantomData::<Pixels>,
+        };
+
+        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        event_loop.run_app(&mut app).unwrap();
+
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+        console_error_panic_hook::set_once();
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+        winit::platform::web::EventLoopExtWebSys::spawn_app(event_loop, app);
     }
 
     struct App<Memory, Pixels> {
-        window: Option<Window>,
+        window: Option<Rc<Window>>,
+        #[allow(unused)]
+        stream: Stream,
         gfx: Option<Gfx>,
         width: usize,
         height: usize,
@@ -127,13 +143,14 @@ mod software {
         sample_buffer: SampleBuffer,
         sample_rate: u32,
         channels: usize,
+        #[cfg(not(target_arch = "wasm32"))]
         now: SystemTime,
         _pixels: PhantomData<Pixels>,
     }
 
     struct Gfx {
-        _ctx: Context<&'static Window>,
-        surface: softbuffer::Surface<&'static Window, &'static Window>,
+        _ctx: Context<OwnedDisplayHandle>,
+        surface: softbuffer::Surface<OwnedDisplayHandle, Rc<Window>>,
     }
 
     impl<Memory, Pixels> ApplicationHandler for App<Memory, Pixels> {
@@ -142,8 +159,11 @@ mod software {
                 return;
             }
 
-            let window_attributes = WindowAttributes::default();
-            self.window = match event_loop.create_window(window_attributes) {
+            let attributes = WindowAttributes::default();
+            #[cfg(target_arch = "wasm32")]
+            let attributes =
+                winit::platform::web::WindowAttributesExtWebSys::with_append(attributes, true);
+            self.window = match event_loop.create_window(attributes) {
                 Ok(window) => {
                     let failed = window.request_inner_size(PhysicalSize::new(
                         self.width as u32,
@@ -153,23 +173,30 @@ mod software {
                         failed.is_none(),
                         "platform does not support resizing the window"
                     );
-                    Some(window)
+                    window.request_redraw();
+                    Some(Rc::new(window))
                 }
                 Err(err) => {
-                    std::eprintln!("error creating window: {err}");
+                    std::println!("[ERROR] failed to create the window: {err}");
                     event_loop.exit();
                     return;
                 }
             };
 
-            let ctx = Context::new(unsafe {
-                core::mem::transmute::<&'_ Window, &'static Window>(self.window.as_ref().unwrap())
-            })
-            .expect("Failed to create a softbuffer context");
-            let surface = softbuffer::Surface::new(&ctx, unsafe {
-                core::mem::transmute::<&'_ Window, &'static Window>(self.window.as_ref().unwrap())
-            })
-            .expect("Failed to create a softbuffer surface");
+            let ctx = Context::new(event_loop.owned_display_handle())
+                .expect("Failed to create a softbuffer context");
+            let mut surface = softbuffer::Surface::new(&ctx, self.window.as_ref().unwrap().clone())
+                .expect("Failed to create a softbuffer surface");
+
+            if self.width > 0 && self.height > 0 {
+                surface
+                    .resize(
+                        NonZeroU32::new(self.width as u32).unwrap(),
+                        NonZeroU32::new(self.height as u32).unwrap(),
+                    )
+                    .expect("failed to resize the softbuffer surface");
+            }
+
             self.gfx = Some(Gfx { _ctx: ctx, surface });
         }
 
@@ -201,6 +228,9 @@ mod software {
                         .expect("redraw request without a window");
                     window.request_redraw();
 
+                    #[cfg(target_arch = "wasm32")]
+                    let delta = 1.0 / 60.0;
+                    #[cfg(not(target_arch = "wasm32"))]
                     let delta = {
                         let now = SystemTime::now();
                         let delta = now
@@ -249,6 +279,15 @@ mod software {
                         // Notify that you're about to draw.
                         window.pre_present_notify();
 
+                        let size = window.inner_size();
+                        if let (Some(w), Some(h)) =
+                            (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+                        {
+                            gfx.surface
+                                .resize(w, h)
+                                .expect("failed to resize the softbuffer surface");
+                        }
+
                         let mut buffer = gfx
                             .surface
                             .buffer_mut()
@@ -266,6 +305,20 @@ mod software {
                     }
                 }
                 event => {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        use winit::event::{ElementState, MouseButton};
+                        if matches!(
+                            event,
+                            WindowEvent::MouseInput {
+                                state: ElementState::Pressed,
+                                button: MouseButton::Left,
+                                ..
+                            }
+                        ) {
+                            _ = self.stream.play();
+                        }
+                    }
                     self.fns.handle_input(crate::PlatformInput {
                         memory: &mut self.mem,
                         input: event,
@@ -276,6 +329,7 @@ mod software {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "opengl")]
 pub fn run<Memory>(
     mem: Memory,
@@ -283,30 +337,22 @@ pub fn run<Memory>(
     height: usize,
     handle_input: fn(crate::PlatformInput<Memory>),
     update_and_render: fn(crate::PlatformUpdate<Memory>),
-    initialize_opengl: fn(&dyn Fn(&'static str) -> *const std::ffi::c_void),
     reload: Option<&str>,
 ) where
     Memory: 'static,
 {
-    opengl::run(
-        mem,
-        width,
-        height,
-        handle_input,
-        update_and_render,
-        initialize_opengl,
-        reload,
-    );
+    opengl::run(mem, width, height, handle_input, update_and_render, reload);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "opengl")]
 mod opengl {
     use super::*;
 
     use crate::callback::FnPtrs;
-    use alloc::ffi::CString;
     use core::num::NonZeroU32;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use glow::HasContext;
     use glutin::config::{Config, ConfigTemplateBuilder, GetGlConfig};
     use glutin::context::{
         ContextApi, ContextAttributesBuilder, NotCurrentContext, PossiblyCurrentContext,
@@ -329,7 +375,6 @@ mod opengl {
         height: usize,
         handle_input: fn(crate::PlatformInput<Memory>),
         update_and_render: fn(crate::PlatformUpdate<Memory>),
-        initialize_opengl: fn(&dyn Fn(&'static str) -> *const core::ffi::c_void),
         reload: Option<&str>,
     ) where
         Memory: 'static,
@@ -361,7 +406,7 @@ mod opengl {
                         }
                     }
                 },
-                |err| std::eprintln!("audio thread error: {}", err),
+                |err| std::println!("[ERROR] audio thread: {}", err),
                 None,
             )
             .unwrap();
@@ -369,40 +414,41 @@ mod opengl {
         stream.play().unwrap();
 
         let event_loop = EventLoop::new().unwrap();
-        event_loop
-            .run_app(&mut opengl::OpenGLApp {
-                window: None,
-                gl_display: Some(
-                    DisplayBuilder::new()
-                        .with_window_attributes(Some(Window::default_attributes())),
-                ),
-                gl_context: None,
-                gl_surface: None,
-                width,
-                height,
-                mem,
-                fns: FnPtrs::new(handle_input, update_and_render, initialize_opengl, reload),
-                sample_buffer,
-                sample_rate,
-                channels,
-                now: SystemTime::now(),
-            })
-            .unwrap();
+
+        let mut app = &mut opengl::OpenGLApp {
+            window: None,
+            gl_display: Some(
+                DisplayBuilder::new().with_window_attributes(Some(Window::default_attributes())),
+            ),
+            gl_context: None,
+            gl_surface: None,
+            gl: None,
+            width,
+            height,
+            mem,
+            fns: FnPtrs::new(handle_input, update_and_render, reload),
+            sample_buffer,
+            sample_rate,
+            channels,
+            now: SystemTime::now(),
+        };
+        event_loop.run_app(&mut app).unwrap();
     }
 
     pub struct OpenGLApp<Memory> {
-        pub window: Option<Window>,
-        pub gl_display: Option<DisplayBuilder>,
-        pub gl_context: Option<PossiblyCurrentContext>,
-        pub gl_surface: Option<Surface<WindowSurface>>,
-        pub width: usize,
-        pub height: usize,
-        pub mem: Memory,
-        pub fns: FnPtrs,
-        pub sample_buffer: SampleBuffer,
-        pub sample_rate: u32,
-        pub channels: usize,
-        pub now: SystemTime,
+        window: Option<Window>,
+        gl_display: Option<DisplayBuilder>,
+        gl_context: Option<PossiblyCurrentContext>,
+        gl_surface: Option<Surface<WindowSurface>>,
+        gl: Option<glow::Context>,
+        width: usize,
+        height: usize,
+        mem: Memory,
+        fns: FnPtrs,
+        sample_buffer: SampleBuffer,
+        sample_rate: u32,
+        channels: usize,
+        now: SystemTime,
     }
 
     impl<Memory> ApplicationHandler for OpenGLApp<Memory> {
@@ -473,19 +519,18 @@ mod opengl {
             let gl_context = self.gl_context.as_ref().unwrap();
             gl_context.make_current(&gl_surface).unwrap();
 
-            gl::load_with(|symbol| {
-                let symbol = CString::new(symbol).unwrap();
-                gl_context
-                    .display()
-                    .get_proc_address(symbol.as_c_str())
-                    .cast()
-            });
+            let gl = unsafe {
+                glow::Context::from_loader_function_cstr(|s| {
+                    gl_config.display().get_proc_address(s)
+                })
+            };
 
             gl_surface
                 .set_swap_interval(gl_context, SwapInterval::DontWait)
                 .unwrap();
 
             self.gl_surface = Some(gl_surface);
+            self.gl = Some(gl);
             self.window = Some(window);
         }
 
@@ -509,7 +554,9 @@ mod opengl {
                         self.width = size.width as usize;
                         self.height = size.height as usize;
                         unsafe {
-                            gl::Viewport(0, 0, self.width as i32, self.height as i32);
+                            if let Some(gl) = &mut self.gl {
+                                gl.viewport(0, 0, self.width as i32, self.height as i32);
+                            }
                         }
                     }
                 }
@@ -521,18 +568,6 @@ mod opengl {
                         .as_ref()
                         .expect("redraw request without a window");
                     window.request_redraw();
-
-                    if reloaded {
-                        self.fns.initialize_opengl(&|symbol| {
-                            let symbol = CString::new(symbol).unwrap();
-                            // TODO: this might fail
-                            let gl_context = self.gl_context.as_ref().unwrap();
-                            gl_context
-                                .display()
-                                .get_proc_address(symbol.as_c_str())
-                                .cast()
-                        });
-                    }
 
                     let delta = {
                         let now = SystemTime::now();
@@ -556,16 +591,19 @@ mod opengl {
                         }
                     };
 
-                    self.fns.update_and_render(crate::PlatformUpdate {
-                        memory: &mut self.mem,
-                        delta,
-                        width: self.width,
-                        height: self.height,
-                        samples,
-                        sample_rate: self.sample_rate,
-                        channels: self.channels,
-                        reloaded,
-                    });
+                    if let Some(gl) = &self.gl {
+                        self.fns.update_and_render(crate::PlatformUpdate {
+                            memory: &mut self.mem,
+                            delta,
+                            gl,
+                            width: self.width,
+                            height: self.height,
+                            samples,
+                            sample_rate: self.sample_rate,
+                            channels: self.channels,
+                            reloaded,
+                        });
+                    }
 
                     if !samples.is_empty() {
                         let mut sample_buffer = self.sample_buffer.lock().unwrap();
@@ -611,5 +649,236 @@ mod opengl {
                         .expect("failed to create OpenGL context")
                 })
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "opengl")]
+pub fn run<Memory>(
+    mem: Memory,
+    width: usize,
+    height: usize,
+    handle_input: fn(crate::PlatformInput<Memory>),
+    update_and_render: fn(crate::PlatformUpdate<Memory>),
+    reload: Option<&str>,
+) where
+    Memory: 'static,
+{
+    opengl_wasm::run(mem, width, height, handle_input, update_and_render, reload);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "opengl")]
+mod opengl_wasm {
+    use super::*;
+
+    use crate::callback::FnPtrs;
+    use crate::winit::platform::web::WindowExtWebSys;
+    use cpal::Stream;
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use glow::HasContext;
+    use wasm_bindgen::JsCast;
+    use winit::application::ApplicationHandler;
+    use winit::dpi::PhysicalSize;
+    use winit::event::WindowEvent;
+    use winit::event::{ElementState, MouseButton};
+    use winit::event_loop::{ActiveEventLoop, EventLoop};
+    use winit::window::{Window, WindowAttributes, WindowId};
+
+    pub fn run<Memory>(
+        mem: Memory,
+        width: usize,
+        height: usize,
+        handle_input: fn(crate::PlatformInput<Memory>),
+        update_and_render: fn(crate::PlatformUpdate<Memory>),
+        reload: Option<&str>,
+    ) where
+        Memory: 'static,
+    {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or("No output device available")
+            .unwrap();
+
+        let config = device.default_output_config().unwrap();
+        let channels = config.channels() as usize;
+        let sample_rate = config.sample_rate().0;
+        let sample_buffer = Arc::new(Mutex::new(VecDeque::new()));
+
+        let stream = device
+            .build_output_stream(
+                &config.into(),
+                {
+                    let sample_buffer = sample_buffer.clone();
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        let mut buffer = sample_buffer.lock().unwrap();
+                        let len = data.len();
+                        let buffer_len = buffer.len();
+                        for (out, input) in
+                            data.iter_mut().zip(buffer.drain(0..len.min(buffer_len)))
+                        {
+                            *out = input;
+                        }
+                    }
+                },
+                |err| std::println!("[ERROR] audio thread: {}", err),
+                None,
+            )
+            .unwrap();
+
+        let event_loop = EventLoop::new().unwrap();
+
+        let app = OpenGLApp {
+            window: None,
+            stream,
+            gl: None,
+            width,
+            height,
+            mem,
+            fns: FnPtrs::new(handle_input, update_and_render, reload),
+            sample_buffer,
+            sample_rate,
+            channels,
+        };
+        console_error_panic_hook::set_once();
+        winit::platform::web::EventLoopExtWebSys::spawn_app(event_loop, app);
+    }
+
+    pub struct OpenGLApp<Memory> {
+        window: Option<Window>,
+        stream: Stream,
+        gl: Option<glow::Context>,
+        width: usize,
+        height: usize,
+        mem: Memory,
+        fns: FnPtrs,
+        sample_buffer: SampleBuffer,
+        sample_rate: u32,
+        channels: usize,
+    }
+
+    impl<Memory> ApplicationHandler for OpenGLApp<Memory> {
+        fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+            if self.window.is_some() {
+                return;
+            }
+
+            let window = match event_loop
+                .create_window(window_attributes(self.width as u32, self.height as u32))
+            {
+                Ok(window) => window,
+                Err(err) => {
+                    crate::log!("[ERROR] failed to create the window: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .body()
+                .unwrap()
+                .append_child(&window.canvas().unwrap())
+                .unwrap();
+            let webgl2_context = window
+                .canvas()
+                .unwrap()
+                .get_context("webgl2")
+                .unwrap()
+                .unwrap()
+                .dyn_into::<web_sys::WebGl2RenderingContext>()
+                .unwrap();
+            self.gl = Some(glow::Context::from_webgl2_context(webgl2_context));
+            self.window = Some(window);
+        }
+
+        fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+            match event {
+                WindowEvent::CloseRequested => {
+                    event_loop.exit();
+                }
+                WindowEvent::Resized(size) if size.width != 0 && size.height != 0 => {
+                    self.width = size.width as usize;
+                    self.height = size.height as usize;
+
+                    let device_pixel_ratio = web_sys::window().unwrap().device_pixel_ratio();
+                    let physical_width = (size.width as f64 * device_pixel_ratio) as u32;
+                    let physical_height = (size.height as f64 * device_pixel_ratio) as u32;
+
+                    if let Some(window) = &self.window {
+                        let canvas = window.canvas().unwrap();
+                        canvas.set_width(physical_width);
+                        canvas.set_height(physical_height);
+                    }
+                }
+                WindowEvent::RedrawRequested => {
+                    const HEAD: usize = 1024 * 5;
+                    let mut stack_sample_buffer = [0.0; HEAD];
+                    let samples = {
+                        let sample_buffer = self.sample_buffer.lock().unwrap();
+                        let len = sample_buffer.len();
+                        if len < HEAD {
+                            stack_sample_buffer.as_mut_slice()
+                        } else {
+                            &mut []
+                        }
+                    };
+
+                    if let Some(gl) = &self.gl {
+                        unsafe {
+                            gl.viewport(0, 0, self.width as i32, self.height as i32);
+                        }
+                        self.fns.update_and_render(crate::PlatformUpdate {
+                            memory: &mut self.mem,
+                            delta: 1.0 / 60.0,
+                            gl,
+                            width: self.width,
+                            height: self.height,
+                            samples,
+                            sample_rate: self.sample_rate,
+                            channels: self.channels,
+                            reloaded: false,
+                        });
+                    }
+
+                    if !samples.is_empty() {
+                        let mut sample_buffer = self.sample_buffer.lock().unwrap();
+                        sample_buffer.extend(samples.iter());
+                    }
+                }
+                event => {
+                    if matches!(
+                        event,
+                        WindowEvent::MouseInput {
+                            state: ElementState::Pressed,
+                            button: MouseButton::Left,
+                            ..
+                        }
+                    ) {
+                        _ = self.stream.play();
+                    }
+                    self.fns.handle_input(crate::PlatformInput {
+                        memory: &mut self.mem,
+                        input: event,
+                    });
+                }
+            }
+        }
+
+        fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+    }
+
+    fn window_attributes(width: u32, height: u32) -> WindowAttributes {
+        winit::platform::web::WindowAttributesExtWebSys::with_append(
+            Window::default_attributes().with_inner_size(PhysicalSize::new(width, height)),
+            true,
+        )
     }
 }

@@ -3,8 +3,6 @@ pub struct FnPtrs {
     reloading: hot_reloading::HotReloading,
     handle_input: *mut core::ffi::c_void,
     update_and_render: *mut core::ffi::c_void,
-    #[cfg(feature = "opengl")]
-    initialize_opengl: *mut core::ffi::c_void,
 }
 
 impl FnPtrs {
@@ -18,8 +16,6 @@ impl FnPtrs {
             reloading: hot_reloading::HotReloading::from_path(path),
             handle_input: handle_input as *mut core::ffi::c_void,
             update_and_render: update_and_render as *mut core::ffi::c_void,
-            #[cfg(feature = "opengl")]
-            initialize_opengl: core::ptr::null_mut(),
         }
     }
 
@@ -27,14 +23,12 @@ impl FnPtrs {
     pub fn new<Memory>(
         handle_input: fn(crate::PlatformInput<Memory>),
         update_and_render: fn(crate::PlatformUpdate<Memory>),
-        initialize_opengl: fn(&dyn Fn(&'static str) -> *const core::ffi::c_void),
         path: Option<&str>,
     ) -> Self {
         Self {
             reloading: hot_reloading::HotReloading::from_path(path),
             handle_input: handle_input as *mut core::ffi::c_void,
             update_and_render: update_and_render as *mut core::ffi::c_void,
-            initialize_opengl: initialize_opengl as *mut core::ffi::c_void,
         }
     }
 
@@ -55,17 +49,6 @@ impl FnPtrs {
             update_and_render(input);
         }
     }
-
-    #[cfg(feature = "opengl")]
-    pub fn initialize_opengl(&self, loader: &dyn Fn(&'static str) -> *const core::ffi::c_void) {
-        unsafe {
-            let initialize_opengl = core::mem::transmute::<
-                *mut core::ffi::c_void,
-                fn(&dyn Fn(&'static str) -> *const core::ffi::c_void),
-            >(self.initialize_opengl);
-            initialize_opengl(loader);
-        }
-    }
 }
 
 #[cfg(not(feature = "hot-reload"))]
@@ -78,6 +61,7 @@ mod hot_reloading {
         }
     }
     impl FnPtrs {
+        #[allow(unused)]
         pub fn reload(&mut self) -> bool {
             false
         }
@@ -105,6 +89,7 @@ mod hot_reloading {
         }
     }
     impl FnPtrs {
+        #[allow(unused)]
         pub fn reload(&mut self) -> bool {
             let Some(path) = self.reloading.path.as_deref() else {
                 return false;
@@ -147,17 +132,6 @@ mod hot_reloading {
                     let symbol = unsafe { libc::dlsym(dylib, c"handle_input".as_ptr().cast()) };
                     if !symbol.is_null() {
                         self.handle_input = symbol;
-
-                        #[cfg(feature = "opengl")]
-                        if !self.initialize_opengl.is_null() {
-                            let symbol =
-                                unsafe { libc::dlsym(dylib, c"initialize_opengl".as_ptr().cast()) };
-                            if !symbol.is_null() {
-                                self.initialize_opengl = symbol;
-                            } else {
-                                err("failed to load symbol initialize_opengl");
-                            }
-                        }
                     } else {
                         err("failed to load symbol handle_input");
                     }

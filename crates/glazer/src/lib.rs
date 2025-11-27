@@ -2,7 +2,7 @@
 extern crate alloc;
 
 #[cfg(feature = "opengl")]
-pub extern crate gl;
+pub extern crate glow;
 pub extern crate winit;
 
 mod callback;
@@ -74,13 +74,12 @@ pub struct PlatformUpdate<'a, T, Pixels> {
 }
 
 #[cfg(feature = "opengl")]
-pub fn run_opengl<Memory>(
+pub fn run<Memory>(
     memory: Memory,
     width: usize,
     height: usize,
     handle_input: fn(PlatformInput<Memory>),
     update_and_render: fn(PlatformUpdate<Memory>),
-    initialize_opengl: fn(&dyn Fn(&'static str) -> *const core::ffi::c_void),
     shared_lib_path: Option<&str>,
 ) where
     Memory: 'static + Send,
@@ -91,7 +90,6 @@ pub fn run_opengl<Memory>(
         height,
         handle_input,
         update_and_render,
-        initialize_opengl,
         shared_lib_path,
     );
 }
@@ -104,6 +102,7 @@ pub struct PlatformUpdate<'a, T> {
     pub delta: f32,
 
     // graphics
+    pub gl: &'a glow::Context,
     pub width: usize,
     pub height: usize,
 
@@ -135,10 +134,6 @@ pub mod debug {
     ///
     /// Returns `None` if `debug_assertions` are disabled.
     pub fn debug_target() -> Option<&'static str> {
-        #[cfg(not(debug_assertions))]
-        {
-            None
-        }
         #[cfg(all(debug_assertions, any(target_os = "linux", target_os = "macos")))]
         {
             extern crate std;
@@ -150,11 +145,13 @@ pub mod debug {
 
             let name = env!("CARGO_CRATE_NAME");
             let path = alloc::format!("target/debug/lib{}.{}", name, extension);
-            match std::fs::exists(&path) {
+            return match std::fs::exists(&path) {
                 Ok(_) => Some(std::string::String::leak(path)),
                 Err(err) => panic!("failed to load {path}: {err}"),
-            }
+            };
         }
+        #[allow(unused)]
+        None
     }
 
     #[macro_export]
@@ -163,15 +160,26 @@ pub mod debug {
             $crate::__log("\n")
         };
         ($($arg:tt)*) => {{
-            $crate::debug::__log(&alloc::format!($($arg)*));
-            $crate::debug::__log("\n")
+            extern crate alloc;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                $crate::debug::__log(&alloc::format!($($arg)*));
+                $crate::debug::__log("\n")
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                $crate::debug::__log(&alloc::format!($($arg)*));
+            }
         }};
     }
 
     #[inline]
     #[doc(hidden)]
     pub fn __log(str: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
         std::print!("{str}");
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::info_1(&str.into());
     }
 
     pub fn debug_time_secs<R>(mut f: impl FnMut() -> R) -> (f32, R) {
