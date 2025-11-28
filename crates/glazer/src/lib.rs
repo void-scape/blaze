@@ -38,6 +38,7 @@ where
 pub struct PlatformUpdate<'a, T> {
     // logic
     pub memory: &'a mut T,
+    pub window: &'a winit::window::Window,
     pub delta: f32,
 
     // graphics
@@ -60,6 +61,9 @@ pub struct PlatformUpdate<'a, T> {
 #[derive(Debug)]
 pub struct PlatformInput<'a, T> {
     pub memory: &'a mut T,
+    pub window: &'a winit::window::Window,
+    #[cfg(feature = "opengl")]
+    pub gl: &'a glow::Context,
     pub input: winit::event::WindowEvent,
 }
 

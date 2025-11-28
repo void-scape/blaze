@@ -297,7 +297,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        match event {
+        match &event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
@@ -396,6 +396,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
 
                 self.fns.update_and_render(crate::PlatformUpdate {
                     memory: &mut self.mem,
+                    window: &window,
                     delta,
                     //
                     #[cfg(feature = "opengl")]
@@ -441,28 +442,44 @@ impl<Memory> ApplicationHandler for App<Memory> {
                     .expect("failed to present the frame buffer");
                 window.request_redraw();
             }
-            event => {
-                // NOTE: Don't start stream until the user interacts with the page.
-                #[cfg(target_arch = "wasm32")]
-                {
-                    use winit::event::{ElementState, MouseButton};
-                    if matches!(
-                        event,
-                        WindowEvent::MouseInput {
-                            state: ElementState::Pressed,
-                            button: MouseButton::Left,
-                            ..
-                        }
-                    ) {
-                        _ = self.stream.play();
-                    }
+            _ => {}
+        }
+
+        // NOTE: Don't start stream until the user interacts with the page.
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::event::{ElementState, MouseButton};
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
                 }
-                self.fns.handle_input(crate::PlatformInput {
-                    memory: &mut self.mem,
-                    input: event,
-                });
+            ) {
+                _ = self.stream.play();
             }
         }
+
+        let Some(gfx) = &mut self.gfx else {
+            return;
+        };
+
+        let Some(window) = &self.window else {
+            return;
+        };
+
+        self.fns.handle_input(crate::PlatformInput {
+            memory: &mut self.mem,
+            window: &window,
+            #[cfg(feature = "opengl")]
+            #[cfg(not(target_arch = "wasm32"))]
+            gl: &gfx.gl,
+            #[cfg(feature = "opengl")]
+            #[cfg(target_arch = "wasm32")]
+            gl: &gfx,
+            input: event,
+        });
     }
 }
 
