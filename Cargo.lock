@@ -950,6 +950,7 @@ dependencies = [
  "glutin-winit",
  "libc",
  "softbuffer",
+ "tint",
  "wasm-bindgen",
  "web-sys",
  "winit",

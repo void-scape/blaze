@@ -3,77 +3,14 @@ extern crate alloc;
 
 #[cfg(feature = "opengl")]
 pub extern crate glow;
+#[cfg(feature = "software")]
+pub extern crate tint;
 pub extern crate winit;
 
 mod callback;
 mod platform;
+mod time;
 
-#[cfg(feature = "software")]
-#[macro_export]
-macro_rules! static_frame_buffer {
-    ($width:expr, $height:expr, $type:ty, $init:expr) => {{
-        static mut FRAME_BUFFER: [$type; $width * $height] = [$init; $width * $height];
-        // ## Safety
-        //
-        // `FRAME_BUFFER` is locally scoped to this macro invocation. There cannot
-        // exist any other mutable references to `FRAME_BUFFER` with safe Rust code.
-        unsafe {
-            #[allow(static_mut_refs)]
-            &mut FRAME_BUFFER
-        }
-    }};
-}
-
-#[cfg(feature = "software")]
-pub fn run<Memory, Pixels>(
-    memory: Memory,
-    frame_buffer: &mut [Pixels],
-    width: usize,
-    height: usize,
-    handle_input: fn(PlatformInput<Memory>),
-    update_and_render: fn(PlatformUpdate<Memory, Pixels>),
-    shared_lib_path: Option<&str>,
-) where
-    Pixels: 'static,
-    Memory: 'static + Send,
-{
-    assert!(
-        core::mem::size_of::<Pixels>() == 4,
-        "`Pixels` must be 4 bytes"
-    );
-    platform::run(
-        memory,
-        frame_buffer,
-        width,
-        height,
-        handle_input,
-        update_and_render,
-        shared_lib_path,
-    );
-}
-
-#[cfg(feature = "software")]
-#[derive(Debug)]
-pub struct PlatformUpdate<'a, T, Pixels> {
-    // logic
-    pub memory: &'a mut T,
-    pub delta: f32,
-
-    // graphics
-    pub frame_buffer: &'a mut [Pixels],
-    pub width: usize,
-    pub height: usize,
-
-    // audio
-    pub samples: &'a mut [f32],
-    pub sample_rate: u32,
-    pub channels: usize,
-
-    // debug
-    pub reloaded: bool,
-}
-
-#[cfg(feature = "opengl")]
 pub fn run<Memory>(
     memory: Memory,
     width: usize,
@@ -81,7 +18,8 @@ pub fn run<Memory>(
     handle_input: fn(PlatformInput<Memory>),
     update_and_render: fn(PlatformUpdate<Memory>),
     shared_lib_path: Option<&str>,
-) where
+) -> !
+where
     Memory: 'static + Send,
 {
     platform::run(
@@ -92,17 +30,21 @@ pub fn run<Memory>(
         update_and_render,
         shared_lib_path,
     );
+    // NOTE: Some platforms never return and this communicates that clearly.
+    extern crate std;
+    std::process::exit(0);
 }
 
-#[cfg(feature = "opengl")]
-#[derive(Debug)]
 pub struct PlatformUpdate<'a, T> {
     // logic
     pub memory: &'a mut T,
     pub delta: f32,
 
     // graphics
+    #[cfg(feature = "opengl")]
     pub gl: &'a glow::Context,
+    #[cfg(feature = "software")]
+    pub frame_buffer: &'a mut [tint::Srgb],
     pub width: usize,
     pub height: usize,
 

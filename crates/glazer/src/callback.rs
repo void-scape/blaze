@@ -6,20 +6,6 @@ pub struct FnPtrs {
 }
 
 impl FnPtrs {
-    #[cfg(feature = "software")]
-    pub fn new<Memory, Pixels>(
-        handle_input: fn(crate::PlatformInput<Memory>),
-        update_and_render: fn(crate::PlatformUpdate<Memory, Pixels>),
-        path: Option<&str>,
-    ) -> Self {
-        Self {
-            reloading: hot_reloading::HotReloading::from_path(path),
-            handle_input: handle_input as *mut core::ffi::c_void,
-            update_and_render: update_and_render as *mut core::ffi::c_void,
-        }
-    }
-
-    #[cfg(feature = "opengl")]
     pub fn new<Memory>(
         handle_input: fn(crate::PlatformInput<Memory>),
         update_and_render: fn(crate::PlatformUpdate<Memory>),
@@ -61,7 +47,6 @@ mod hot_reloading {
         }
     }
     impl FnPtrs {
-        #[allow(unused)]
         pub fn reload(&mut self) -> bool {
             false
         }
@@ -89,7 +74,6 @@ mod hot_reloading {
         }
     }
     impl FnPtrs {
-        #[allow(unused)]
         pub fn reload(&mut self) -> bool {
             let Some(path) = self.reloading.path.as_deref() else {
                 return false;
