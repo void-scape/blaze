@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["opengl", "hot-reload"]
+default = ["opengl", "audio", "hot-reload"]
+audio = ["cpal"]
 software = ["softbuffer", "tint"]
-opengl = ["glow", "glutin", "glutin-winit"]
+opengl = ["glow", "glutin", "glutin-winit", "glow/debug_automatic_glGetError"]
 hot-reload = ["libc"]
 
 [dependencies]
-cpal = { version = "0.15" }
+cpal = { version = "0.15", optional = true }
 libc = { version = "0.2", optional = true }
 glow = { version = "0.16", optional = true }
 tint = { path = "../tint", optional = true }

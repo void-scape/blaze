@@ -20,7 +20,7 @@ pub fn run<Memory>(
     shared_lib_path: Option<&str>,
 ) -> !
 where
-    Memory: 'static + Send,
+    Memory: 'static,
 {
     platform::run(
         memory,
@@ -38,8 +38,11 @@ where
 pub struct PlatformUpdate<'a, T> {
     // logic
     pub memory: &'a mut T,
-    pub window: &'a winit::window::Window,
     pub delta: f32,
+
+    // window
+    pub event_loop: &'a winit::event_loop::ActiveEventLoop,
+    pub window: &'a winit::window::Window,
 
     // graphics
     #[cfg(feature = "opengl")]
@@ -50,21 +53,28 @@ pub struct PlatformUpdate<'a, T> {
     pub height: usize,
 
     // audio
+    #[cfg(feature = "audio")]
     pub samples: &'a mut [f32],
+    #[cfg(feature = "audio")]
     pub sample_rate: u32,
+    #[cfg(feature = "audio")]
     pub channels: usize,
 
     // debug
     pub reloaded: bool,
 }
 
-#[derive(Debug)]
 pub struct PlatformInput<'a, T> {
     pub memory: &'a mut T,
     pub window: &'a winit::window::Window,
     #[cfg(feature = "opengl")]
     pub gl: &'a glow::Context,
-    pub input: winit::event::WindowEvent,
+    pub input: Input,
+}
+
+pub enum Input {
+    Window(winit::event::WindowEvent),
+    Device(winit::event::DeviceEvent),
 }
 
 // Debug utility

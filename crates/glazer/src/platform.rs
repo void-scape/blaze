@@ -1,25 +1,27 @@
 use crate::callback::FnPtrs;
 use crate::time::Time;
-use alloc::collections::vec_deque::VecDeque;
 use alloc::rc::Rc;
-use alloc::sync::Arc;
+#[cfg(feature = "audio")]
+use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 use core::num::NonZeroU32;
-use cpal::Stream;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(feature = "audio")]
+use cpal::{
+    Stream,
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+};
 #[cfg(feature = "opengl")]
 #[cfg(not(target_arch = "wasm32"))]
-use glutin::config::{Config, GetGlConfig};
-#[cfg(feature = "opengl")]
-#[cfg(not(target_arch = "wasm32"))]
-use glutin::context::{NotCurrentContext, PossiblyCurrentContext};
-#[cfg(feature = "opengl")]
-#[cfg(not(target_arch = "wasm32"))]
-use glutin::surface::{Surface, WindowSurface};
+use glutin::{
+    config::{Config, GetGlConfig},
+    context::{NotCurrentContext, PossiblyCurrentContext},
+    surface::{Surface, WindowSurface},
+};
 #[cfg(feature = "opengl")]
 #[cfg(not(target_arch = "wasm32"))]
 use glutin_winit::DisplayBuilder;
 #[cfg(feature = "software")]
 use softbuffer::Context;
+#[cfg(feature = "audio")]
 use std::sync::Mutex;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -31,8 +33,6 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 extern crate std;
 
-type SampleBuffer = Arc<Mutex<VecDeque<f32>>>;
-
 pub fn run<Memory>(
     mem: Memory,
     width: usize,
@@ -41,40 +41,52 @@ pub fn run<Memory>(
     update_and_render: fn(crate::PlatformUpdate<Memory>),
     reload: Option<&str>,
 ) where
-    Memory: 'static + Send,
+    Memory: 'static,
 {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or("No output device available")
-        .unwrap();
+    #[cfg(feature = "audio")]
+    let audio = {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or("No output device available")
+            .unwrap();
 
-    let config = device.default_output_config().unwrap();
-    let channels = config.channels() as usize;
-    let sample_rate = config.sample_rate().0;
-    let sample_buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let config = device.default_output_config().unwrap();
+        let channels = config.channels() as usize;
+        let sample_rate = config.sample_rate().0;
+        let sample_buffer = Arc::new(Mutex::new(VecDeque::new()));
 
-    let stream = device
-        .build_output_stream(
-            &config.into(),
-            {
-                let sample_buffer = sample_buffer.clone();
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let mut buffer = sample_buffer.lock().unwrap();
-                    let len = data.len();
-                    let buffer_len = buffer.len();
-                    for (out, input) in data.iter_mut().zip(buffer.drain(0..len.min(buffer_len))) {
-                        *out = input;
+        let stream = device
+            .build_output_stream(
+                &config.into(),
+                {
+                    let sample_buffer = sample_buffer.clone();
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        let mut buffer = sample_buffer.lock().unwrap();
+                        let len = data.len();
+                        let buffer_len = buffer.len();
+                        for (out, input) in
+                            data.iter_mut().zip(buffer.drain(0..len.min(buffer_len)))
+                        {
+                            *out = input;
+                        }
                     }
-                }
-            },
-            |err| std::println!("[ERROR] audio thread: {}", err),
-            None,
-        )
-        .unwrap();
+                },
+                |err| std::println!("[ERROR] audio thread: {}", err),
+                None,
+            )
+            .unwrap();
 
-    #[cfg(not(target_arch = "wasm32"))]
-    stream.play().unwrap();
+        #[cfg(not(target_arch = "wasm32"))]
+        stream.play().unwrap();
+
+        Audio {
+            stream,
+            sample_buffer,
+            sample_rate,
+            channels,
+        }
+    };
 
     #[allow(unused_mut)]
     let mut app = App {
@@ -86,17 +98,14 @@ pub fn run<Memory>(
                 .with_window_attributes(Some(window_attributes(width as u32, height as u32))),
         ),
         gfx: None,
+        #[cfg(feature = "audio")]
+        audio,
         //
         width,
         height,
         mem,
         now: Time::now(),
         fns: FnPtrs::new(handle_input, update_and_render, reload),
-        //
-        stream,
-        sample_buffer,
-        sample_rate,
-        channels,
     };
 
     let event_loop = EventLoop::new().unwrap();
@@ -115,13 +124,21 @@ struct App<Memory> {
     #[cfg(not(target_arch = "wasm32"))]
     opengl_display_builder: Option<DisplayBuilder>,
     gfx: Option<Gfx>,
+    #[cfg(feature = "audio")]
+    audio: Audio,
     //
     width: usize,
     height: usize,
     mem: Memory,
     now: Time,
     fns: FnPtrs,
-    //
+}
+
+#[cfg(feature = "audio")]
+type SampleBuffer = Arc<Mutex<VecDeque<f32>>>;
+
+#[cfg(feature = "audio")]
+struct Audio {
     #[allow(unused)]
     stream: Stream,
     sample_buffer: SampleBuffer,
@@ -153,6 +170,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use glutin::prelude::{NotCurrentGlContext, PossiblyCurrentGlContext};
+            use glutin::surface::GlSurface;
             use glutin::{display::GetGlDisplay, prelude::GlDisplay};
             use glutin_winit::GlWindow;
 
@@ -211,6 +229,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
             // WGL.
             let gl_context = create_gl_context(&window, &gl_config).treat_as_possibly_current();
             gl_context.make_current(&gl_surface).unwrap();
+            _ = gl_surface.set_swap_interval(&gl_context, glutin::surface::SwapInterval::DontWait);
 
             let gl = unsafe {
                 glow::Context::from_loader_function_cstr(|s| {
@@ -354,19 +373,17 @@ impl<Memory> ApplicationHandler for App<Memory> {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let Some(gfx) = &mut self.gfx else {
+                let (Some(window), Some(gfx)) = (&self.window, &mut self.gfx) else {
                     return;
                 };
 
-                let window = self
-                    .window
-                    .as_ref()
-                    .expect("redraw requested without a window");
-
+                #[cfg(feature = "audio")]
                 const HEAD: usize = 1024 * 5;
+                #[cfg(feature = "audio")]
                 let mut stack_sample_buffer = [0.0; HEAD];
+                #[cfg(feature = "audio")]
                 let samples = {
-                    let sample_buffer = self.sample_buffer.lock().unwrap();
+                    let sample_buffer = self.audio.sample_buffer.lock().unwrap();
                     let len = sample_buffer.len();
                     if len < HEAD {
                         stack_sample_buffer.as_mut_slice()
@@ -396,8 +413,10 @@ impl<Memory> ApplicationHandler for App<Memory> {
 
                 self.fns.update_and_render(crate::PlatformUpdate {
                     memory: &mut self.mem,
-                    window: &window,
                     delta,
+                    //
+                    window: &window,
+                    event_loop,
                     //
                     #[cfg(feature = "opengl")]
                     #[cfg(not(target_arch = "wasm32"))]
@@ -415,15 +434,19 @@ impl<Memory> ApplicationHandler for App<Memory> {
                     width: self.width,
                     height: self.height,
                     //
+                    #[cfg(feature = "audio")]
                     samples,
-                    sample_rate: self.sample_rate,
-                    channels: self.channels,
+                    #[cfg(feature = "audio")]
+                    sample_rate: self.audio.sample_rate,
+                    #[cfg(feature = "audio")]
+                    channels: self.audio.channels,
                     //
                     reloaded,
                 });
 
+                #[cfg(feature = "audio")]
                 if !samples.is_empty() {
-                    let mut sample_buffer = self.sample_buffer.lock().unwrap();
+                    let mut sample_buffer = self.audio.sample_buffer.lock().unwrap();
                     sample_buffer.extend(samples.iter());
                 }
 
@@ -446,6 +469,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
         }
 
         // NOTE: Don't start stream until the user interacts with the page.
+        #[cfg(feature = "audio")]
         #[cfg(target_arch = "wasm32")]
         {
             use winit::event::{ElementState, MouseButton};
@@ -457,7 +481,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
                     ..
                 }
             ) {
-                _ = self.stream.play();
+                _ = self.audio.stream.play();
             }
         }
 
@@ -478,7 +502,30 @@ impl<Memory> ApplicationHandler for App<Memory> {
             #[cfg(feature = "opengl")]
             #[cfg(target_arch = "wasm32")]
             gl: &gfx,
-            input: event,
+            input: crate::Input::Window(event),
+        });
+    }
+
+    fn device_event(
+        &mut self,
+        _: &ActiveEventLoop,
+        _: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        let (Some(window), Some(gfx)) = (&self.window, &mut self.gfx) else {
+            return;
+        };
+
+        self.fns.handle_input(crate::PlatformInput {
+            memory: &mut self.mem,
+            window: &window,
+            #[cfg(feature = "opengl")]
+            #[cfg(not(target_arch = "wasm32"))]
+            gl: &gfx.gl,
+            #[cfg(feature = "opengl")]
+            #[cfg(target_arch = "wasm32")]
+            gl: &gfx,
+            input: crate::Input::Device(event),
         });
     }
 }
