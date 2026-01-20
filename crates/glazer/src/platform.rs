@@ -309,7 +309,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
 
             let ctx = Context::new(event_loop.owned_display_handle())
                 .expect("failed to create the frame buffer");
-            let mut surface = softbuffer::Surface::new(&ctx, self.window.as_ref().unwrap().clone())
+            let surface = softbuffer::Surface::new(&ctx, self.window.as_ref().unwrap().clone())
                 .expect("failed to create the frame buffer");
             self.gfx = Some(Gfx { _ctx: ctx, surface });
         }
@@ -485,6 +485,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
             }
         }
 
+        #[allow(unused)]
         let Some(gfx) = &mut self.gfx else {
             return;
         };
@@ -512,6 +513,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
         _: winit::event::DeviceId,
         event: winit::event::DeviceEvent,
     ) {
+        #[allow(unused)]
         let (Some(window), Some(gfx)) = (&self.window, &mut self.gfx) else {
             return;
         };
