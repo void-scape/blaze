@@ -3,7 +3,6 @@ use crate::time::Time;
 use alloc::rc::Rc;
 #[cfg(feature = "audio")]
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
-use core::num::NonZeroU32;
 #[cfg(feature = "audio")]
 use cpal::{
     Stream,
@@ -97,6 +96,7 @@ pub fn run<Memory>(
             DisplayBuilder::new()
                 .with_window_attributes(Some(window_attributes(width as u32, height as u32))),
         ),
+        #[cfg(any(feature = "opengl", feature = "software"))]
         gfx: None,
         #[cfg(feature = "audio")]
         audio,
@@ -123,6 +123,7 @@ struct App<Memory> {
     #[cfg(feature = "opengl")]
     #[cfg(not(target_arch = "wasm32"))]
     opengl_display_builder: Option<DisplayBuilder>,
+    #[cfg(any(feature = "opengl", feature = "software"))]
     gfx: Option<Gfx>,
     #[cfg(feature = "audio")]
     audio: Audio,
@@ -166,6 +167,11 @@ struct Gfx {
 
 impl<Memory> ApplicationHandler for App<Memory> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(not(any(feature = "opengl", feature = "software")))]
+        {
+            _ = event_loop;
+        }
+
         #[cfg(feature = "opengl")]
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -313,6 +319,24 @@ impl<Memory> ApplicationHandler for App<Memory> {
                 .expect("failed to create the frame buffer");
             self.gfx = Some(Gfx { _ctx: ctx, surface });
         }
+
+        #[cfg(not(any(feature = "opengl", feature = "software")))]
+        {
+            if self.window.is_some() {
+                return;
+            }
+
+            self.window = match event_loop
+                .create_window(window_attributes(self.width as u32, self.height as u32))
+            {
+                Ok(window) => Some(Rc::new(window)),
+                Err(err) => {
+                    std::println!("[ERROR] failed to create the window: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -321,9 +345,17 @@ impl<Memory> ApplicationHandler for App<Memory> {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
+                #[cfg(not(any(feature = "opengl", feature = "software")))]
+                {
+                    _ = size;
+                }
+
+                #[cfg(any(feature = "opengl", feature = "software"))]
                 if let Some(gfx) = self.gfx.as_mut()
-                    && let (Some(w), Some(h)) =
-                        (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+                    && let (Some(w), Some(h)) = (
+                        core::num::NonZeroU32::new(size.width),
+                        core::num::NonZeroU32::new(size.height),
+                    )
                 {
                     self.width = size.width as usize;
                     self.height = size.height as usize;
@@ -373,7 +405,12 @@ impl<Memory> ApplicationHandler for App<Memory> {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let (Some(window), Some(gfx)) = (&self.window, &mut self.gfx) else {
+                let Some(window) = &self.window else {
+                    return;
+                };
+
+                #[cfg(any(feature = "opengl", feature = "software"))]
+                let Some(gfx) = &mut self.gfx else {
                     return;
                 };
 
@@ -486,6 +523,7 @@ impl<Memory> ApplicationHandler for App<Memory> {
         }
 
         #[allow(unused)]
+        #[cfg(any(feature = "opengl", feature = "software"))]
         let Some(gfx) = &mut self.gfx else {
             return;
         };
@@ -513,8 +551,12 @@ impl<Memory> ApplicationHandler for App<Memory> {
         _: winit::event::DeviceId,
         event: winit::event::DeviceEvent,
     ) {
-        #[allow(unused)]
-        let (Some(window), Some(gfx)) = (&self.window, &mut self.gfx) else {
+        let Some(window) = &self.window else {
+            return;
+        };
+
+        #[cfg(any(feature = "opengl"))]
+        let Some(gfx) = &mut self.gfx else {
             return;
         };
 
