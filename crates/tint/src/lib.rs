@@ -15,7 +15,7 @@
 //!
 //! ## Motivation
 //!
-//! I wrote a [software rasterizer called rast](https://github.com/void-scape/rast)
+//! I wrote a [software rasterizer called rast](https://github.com/void-scape/blaze)
 //! that needed to convert between the sRGB and Linear RGB color spaces without crippling
 //! performance.
 //!
@@ -44,6 +44,7 @@ pub trait Color:
     Copy + From<Srgb> + From<LinearRgb> + From<Hsv> + Into<Srgb> + Into<LinearRgb> + Into<Hsv>
 {
     fn to_srgb(self) -> Srgb;
+    fn to_sbgr(self) -> Sbgr;
     fn to_linear(self) -> LinearRgb;
     fn to_hsv(self) -> Hsv;
 
@@ -129,6 +130,23 @@ impl Color for LinearRgb {
     }
 
     #[inline]
+    #[track_caller]
+    fn to_sbgr(self) -> Sbgr {
+        debug_assert!(0.0 <= self.r && self.r <= 1.0);
+        debug_assert!(0.0 <= self.g && self.g <= 1.0);
+        debug_assert!(0.0 <= self.b && self.b <= 1.0);
+        debug_assert!(0.0 <= self.a && self.a <= 1.0);
+
+        const RANGE: f32 = (LINEAR_TO_SRGB_COMPONENT_LUT_SIZE - 1) as f32;
+        Sbgr::new(
+            LINEAR_TO_SRGB_COMPONENT_LUT[(self.r * RANGE) as usize],
+            LINEAR_TO_SRGB_COMPONENT_LUT[(self.g * RANGE) as usize],
+            LINEAR_TO_SRGB_COMPONENT_LUT[(self.b * RANGE) as usize],
+            (self.a.clamp(0.0, 1.0) * 255.0) as u8,
+        )
+    }
+
+    #[inline]
     fn to_linear(self) -> LinearRgb {
         self
     }
@@ -183,6 +201,12 @@ impl From<Srgb> for LinearRgb {
     }
 }
 
+impl From<Sbgr> for LinearRgb {
+    fn from(value: Sbgr) -> Self {
+        value.to_linear()
+    }
+}
+
 impl From<Hsv> for LinearRgb {
     fn from(value: Hsv) -> Self {
         value.to_linear()
@@ -198,7 +222,7 @@ macro_rules! channel_wise {
                     (self.r $op rhs.r).clamp(0.0, 1.0),
                     (self.g $op rhs.g).clamp(0.0, 1.0),
                     (self.b $op rhs.b).clamp(0.0, 1.0),
-                    (self.a $op rhs.a).clamp(0.0, 1.0),
+                    self.a,
                 )
             }
         }
@@ -210,7 +234,7 @@ macro_rules! channel_wise {
                     (self.r $op rhs).clamp(0.0, 1.0),
                     (self.g $op rhs).clamp(0.0, 1.0),
                     (self.b $op rhs).clamp(0.0, 1.0),
-                    (self.a $op rhs).clamp(0.0, 1.0),
+                    self.a,
                 )
             }
         }
@@ -229,7 +253,6 @@ macro_rules! channel_wise_assign {
                 self.r = (self.r $op rhs.r).clamp(0.0, 1.0);
                 self.g = (self.g $op rhs.g).clamp(0.0, 1.0);
                 self.b = (self.b $op rhs.b).clamp(0.0, 1.0);
-                self.a = (self.a $op rhs.a).clamp(0.0, 1.0);
             }
         }
 
@@ -238,7 +261,6 @@ macro_rules! channel_wise_assign {
                 self.r = (self.r $op rhs).clamp(0.0, 1.0);
                 self.g = (self.g $op rhs).clamp(0.0, 1.0);
                 self.b = (self.b $op rhs).clamp(0.0, 1.0);
-                self.a = (self.a $op rhs).clamp(0.0, 1.0);
             }
         }
     };
@@ -249,64 +271,129 @@ channel_wise_assign!(SubAssign, sub_assign, -);
 channel_wise_assign!(MulAssign, mul_assign, *);
 channel_wise_assign!(DivAssign, div_assign, /);
 
-/// A color within the [sRGB colorspace].
-///
-/// sRGB is gamma encoded. The red, green, and blue component light intensities
-/// are [non-linear]. Operations that expect to operate linearly over light intensity,
-/// such as mixing, must occur in [linear space](LinearRgb).
-///
-/// [sRGB colorspace]: https://en.wikipedia.org/wiki/SRGB
-/// [non-linear]: https://en.wikipedia.org/wiki/RGB_color_model#Nonlinearity
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Srgb {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
+macro_rules! rgb_swizzle {
+    ($ident:ident, $c1:ident, $c2:ident, $c3:ident) => {
+        /// A color within the [sRGB colorspace].
+        ///
+        /// sRGB is gamma encoded. The red, green, and blue component light intensities
+        /// are [non-linear]. Operations that expect to operate linearly over light intensity,
+        /// such as mixing, must occur in [linear space](LinearRgb).
+        ///
+        /// [sRGB colorspace]: https://en.wikipedia.org/wiki/SRGB
+        /// [non-linear]: https://en.wikipedia.org/wiki/RGB_color_model#Nonlinearity
+        #[repr(C)]
+        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        pub struct $ident {
+            $c1: u8,
+            $c2: u8,
+            $c3: u8,
+            a: u8,
+        }
+
+        impl $ident {
+            #[inline]
+            pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+                Self { r, g, b, a }
+            }
+
+            #[inline]
+            pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+                Self::new(r, g, b, 255)
+            }
+
+            #[inline]
+            pub const fn to_array(self) -> [u8; 4] {
+                [self.$c1, self.$c2, self.$c3, self.a]
+            }
+
+            #[inline]
+            pub fn r(&self) -> u8 {
+                self.r
+            }
+
+            #[inline]
+            pub fn g(&self) -> u8 {
+                self.g
+            }
+
+            #[inline]
+            pub fn b(&self) -> u8 {
+                self.b
+            }
+
+            #[inline]
+            pub fn a(&self) -> u8 {
+                self.a
+            }
+        }
+    };
 }
 
-impl Srgb {
-    #[inline]
-    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { r, g, b, a }
-    }
-
-    #[inline]
-    pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        Self::new(r, g, b, 255)
-    }
-
-    #[inline]
-    pub const fn to_array(self) -> [u8; 4] {
-        [self.r, self.g, self.b, self.a]
-    }
-
-    #[inline]
-    pub fn r(&self) -> u8 {
-        self.r
-    }
-
-    #[inline]
-    pub fn g(&self) -> u8 {
-        self.g
-    }
-
-    #[inline]
-    pub fn b(&self) -> u8 {
-        self.b
-    }
-
-    #[inline]
-    pub fn a(&self) -> u8 {
-        self.a
-    }
-}
-
+rgb_swizzle!(Srgb, r, g, b);
 impl Color for Srgb {
     #[inline]
     fn to_srgb(self) -> Srgb {
+        self
+    }
+
+    #[inline]
+    fn to_sbgr(self) -> Sbgr {
+        Sbgr::new(self.r, self.g, self.b, self.a)
+    }
+
+    #[inline]
+    fn to_linear(self) -> LinearRgb {
+        LinearRgb {
+            r: SRGB_TO_LINEAR_COMPONENT_LUT[self.r as usize],
+            g: SRGB_TO_LINEAR_COMPONENT_LUT[self.g as usize],
+            b: SRGB_TO_LINEAR_COMPONENT_LUT[self.b as usize],
+            a: self.a as f32 / 255.0,
+        }
+    }
+
+    fn to_hsv(self) -> Hsv {
+        self.to_linear().to_hsv()
+    }
+
+    fn alpha(&self) -> f32 {
+        self.a as f32 / u8::MAX as f32
+    }
+
+    fn set_alpha(&mut self, alpha: f32) {
+        self.a = (alpha.clamp(0.0, 1.0) * u8::MAX as f32) as u8;
+    }
+}
+
+impl From<Sbgr> for Srgb {
+    #[track_caller]
+    fn from(value: Sbgr) -> Self {
+        value.to_srgb()
+    }
+}
+
+impl From<LinearRgb> for Srgb {
+    #[track_caller]
+    fn from(value: LinearRgb) -> Self {
+        value.to_srgb()
+    }
+}
+
+impl From<Hsv> for Srgb {
+    fn from(value: Hsv) -> Self {
+        value.to_srgb()
+    }
+}
+
+rgb_swizzle!(Sbgr, b, g, r);
+impl Color for Sbgr {
+    #[inline]
+    fn to_srgb(self) -> Srgb {
+        Srgb::new(self.r, self.g, self.b, self.a)
+    }
+
+    #[inline]
+    fn to_sbgr(self) -> Sbgr {
         self
     }
 
@@ -333,16 +420,22 @@ impl Color for Srgb {
     }
 }
 
-impl From<LinearRgb> for Srgb {
-    #[track_caller]
-    fn from(value: LinearRgb) -> Self {
-        value.to_srgb()
+impl From<Srgb> for Sbgr {
+    fn from(value: Srgb) -> Self {
+        Self::new(value.r, value.g, value.b, value.a)
     }
 }
 
-impl From<Hsv> for Srgb {
+impl From<LinearRgb> for Sbgr {
+    #[track_caller]
+    fn from(value: LinearRgb) -> Self {
+        Self::from(value.to_srgb())
+    }
+}
+
+impl From<Hsv> for Sbgr {
     fn from(value: Hsv) -> Self {
-        value.to_srgb()
+        Self::from(value.to_srgb())
     }
 }
 
@@ -410,6 +503,10 @@ impl Color for Hsv {
         self.to_linear().to_srgb()
     }
 
+    fn to_sbgr(self) -> Sbgr {
+        self.to_linear().to_sbgr()
+    }
+
     fn to_linear(self) -> LinearRgb {
         debug_assert!(0.0 <= self.h && self.h <= 1.0);
         debug_assert!(0.0 <= self.s && self.s <= 1.0);
@@ -457,6 +554,12 @@ impl Color for Hsv {
 
 impl From<Srgb> for Hsv {
     fn from(value: Srgb) -> Self {
+        value.to_hsv()
+    }
+}
+
+impl From<Sbgr> for Hsv {
+    fn from(value: Sbgr) -> Self {
         value.to_hsv()
     }
 }

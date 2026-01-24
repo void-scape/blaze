@@ -48,7 +48,7 @@ pub struct PlatformUpdate<'a, T> {
     #[cfg(feature = "opengl")]
     pub gl: &'a glow::Context,
     #[cfg(feature = "software")]
-    pub frame_buffer: &'a mut [tint::Srgb],
+    pub frame_buffer: &'a mut [tint::Sbgr],
     pub width: usize,
     pub height: usize,
 
